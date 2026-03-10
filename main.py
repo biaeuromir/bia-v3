@@ -128,6 +128,19 @@ AG={"FICHAJE":ag_fichaje,"SALUDO":ag_saludo,"OBRAS":ag_obras,"FINANZAS":ag_finan
 async def procesar(s):
     t0=time.time(); s.trace_id=str(uuid.uuid4())[:8]; s.mensaje_normalizado=s.mensaje_original.strip()
     log.info(f"[{s.trace_id}] 📩 {s.empleado.get('nombre','?')}: {s.mensaje_original[:80]}")
+    # Comprobar espera activa
+    esperas=await db_get("bia_esperas",f"telefono=eq.{s.telefono}&order=created_at.desc&limit=1")
+    if esperas:
+        esp=esperas[0]; log.info(f"[{s.trace_id}] \u23f3 Espera activa: {esp['tipo']}")
+        try:
+            async with httpx.AsyncClient(timeout=10) as c: await c.delete(f"{SUPA}/rest/v1/bia_esperas?id=eq.{esp['id']}",headers={"apikey":SK,"Authorization":f"Bearer {SK}"})
+        except: pass
+        s.dominio=esp["dominio"]; s.dominio_fuente="espera"; s.confianza=1.0; s.accion="continuar"
+        s.timer_start("agente")
+        try: s.respuesta=await AG.get(s.dominio,ag_general)(s)
+        except Exception as e: s.add_error(f"Espera: {e}"); s.respuesta="Problema t\u00e9cnico \U0001f527"
+        s.timer_end("agente"); s.duracion_ms=int((time.time()-t0)*1000)
+        await guardar_ejecucion(s); return s
     s.timer_start("detector"); dom,acc,conf=detectar(s.mensaje_normalizado); s.timer_end("detector")
     if dom!="AMBIGUO":
         s.dominio,s.accion,s.confianza,s.dominio_fuente=dom,acc,conf,"regex"
@@ -170,7 +183,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"3.1-sprint1"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"3.2-esperas"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
