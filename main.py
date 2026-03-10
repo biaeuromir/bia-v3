@@ -230,14 +230,22 @@ async def webhook(req:Request):
                 else:
                     img_b64=""
                 # OCR with GPT-4o Vision
-                if img_b64:
+                if media_url:
                     ocr_prompt="Analiza esta factura/ticket. Extrae: proveedor, CIF, fecha (YYYY-MM-DD), concepto, base_imponible, iva_porcentaje, iva_importe, total. Responde SOLO JSON sin markdown."
-                    mime=img_msg.get("mimetype","image/jpeg")
-                    ocr_msgs=[{"role":"user","content":[{"type":"text","text":ocr_prompt},{"type":"image_url","image_url":{"url":f"data:{mime};base64,{img_b64}","detail":"low"}}]}]
+                    # Try URL first, then base64
+                    ocr_msgs=[{"role":"user","content":[{"type":"text","text":ocr_prompt},{"type":"image_url","image_url":{"url":media_url}}]}]
                     async with httpx.AsyncClient(timeout=60) as oc:
                         ocr_r=await oc.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
                             json={"model":"gpt-4o-mini","messages":ocr_msgs,"max_tokens":500})
                         ocr_data=ocr_r.json()
+                        log.info(f"OCR response status: {'ok' if 'choices' in ocr_data else ocr_data.get('error',{}).get('message','?')}")
+                        if "error" in ocr_data and img_b64:
+                            log.info("URL failed, trying base64...")
+                            mime=img_msg.get("mimetype","image/jpeg")
+                            ocr_msgs2=[{"role":"user","content":[{"type":"text","text":ocr_prompt},{"type":"image_url","image_url":{"url":f"data:{mime};base64,{img_b64}"}}]}]
+                            ocr_r2=await oc.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
+                                json={"model":"gpt-4o-mini","messages":ocr_msgs2,"max_tokens":500})
+                            ocr_data=ocr_r2.json()
                         if "error" in ocr_data:
                             log.error(f"OpenAI Vision error: {ocr_data['error']}")
                             ocr_raw='{"proveedor":"No pude leer","total":0}'
@@ -285,7 +293,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"3.7-ocr-fix"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"3.8-ocr-url"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
