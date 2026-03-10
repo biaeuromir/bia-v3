@@ -157,9 +157,20 @@ async def procesar(s):
                 if 0<=sel<len(obras_full):
                     obra=obras_full[sel]
                     # Register gasto
-                    gasto={"proveedor":factura.get("proveedor","?"),"concepto":factura.get("concepto",""),"base":factura.get("base_imponible",0),"iva":factura.get("iva_importe",0),"total":factura.get("total",0),"fecha_factura":factura.get("fecha",""),"obra":obra["nombre"],"obra_id":obra["id"],"trimestre":"T1-2026","empleado_id":s.empleado.get("id",0),"empleado_nombre":s.empleado.get("nombre","")}
-                    await db_post("gastos",gasto)
-                    s.respuesta=f"✅ Gasto registrado!\n\nProveedor: {factura.get('proveedor','?')}\nTotal: {factura.get('total',0)}€\nObra: {obra['nombre']}"
+                    # Calculate trimestre
+                    from datetime import datetime as dt
+                    try:
+                        fdate=factura.get("fecha","2026-01-01")
+                        if fdate and len(fdate)>=7:
+                            m=int(fdate[5:7]); y=fdate[:4]
+                            trim=f"T{(m-1)//3+1}-{y}"
+                        else: trim="T1-2026"
+                    except: trim="T1-2026"
+                    gasto={"obra_id":obra["id"],"obra":obra["nombre"],"empleado_id":s.empleado.get("id",0),"empleado_nombre":s.empleado.get("nombre",""),"proveedor":factura.get("proveedor",""),"cif_proveedor":factura.get("CIF",factura.get("cif","")),"numero_factura":str(factura.get("numero_factura",factura.get("numero",""))),"fecha_factura":factura.get("fecha",None),"concepto":factura.get("concepto",""),"base_imponible":factura.get("base_imponible",0),"tipo_iva":factura.get("iva_porcentaje",21),"cuota_iva":factura.get("iva_importe",0),"irpf":0,"total":factura.get("total",0),"trimestre":trim}
+                    result=await db_post("gastos",gasto)
+                    if "error" in str(result): log.error(f"Gastos insert: {result}")
+                    prov=factura.get("proveedor","?"); tot=factura.get("total",0)
+                    s.respuesta=f"✅ Gasto registrado!\n\nProveedor: {prov}\nTotal: {tot}€\nObra: {obra['nombre']}\nTrimestre: {trim}\n\nGuardado en BD ✅"
                 else:
                     s.respuesta="Número no válido. Repite por favor."
             except:
@@ -293,7 +304,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"3.8-ocr-url"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"3.9-gastos-fix"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
