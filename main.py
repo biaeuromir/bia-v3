@@ -231,12 +231,18 @@ async def webhook(req:Request):
                     img_b64=""
                 # OCR with GPT-4o Vision
                 if img_b64:
-                    ocr_prompt="Analiza esta factura/ticket. Extrae: proveedor, CIF, fecha (YYYY-MM-DD), concepto, base_imponible, iva_porcentaje, iva_importe, total. Responde JSON sin markdown."
-                    ocr_msgs=[{"role":"user","content":[{"type":"text","text":ocr_prompt},{"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{img_b64}"}}]}]
+                    ocr_prompt="Analiza esta factura/ticket. Extrae: proveedor, CIF, fecha (YYYY-MM-DD), concepto, base_imponible, iva_porcentaje, iva_importe, total. Responde SOLO JSON sin markdown."
+                    mime=img_msg.get("mimetype","image/jpeg")
+                    ocr_msgs=[{"role":"user","content":[{"type":"text","text":ocr_prompt},{"type":"image_url","image_url":{"url":f"data:{mime};base64,{img_b64}","detail":"low"}}]}]
                     async with httpx.AsyncClient(timeout=60) as oc:
                         ocr_r=await oc.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
-                            json={"model":"gpt-4o","messages":ocr_msgs,"max_tokens":500})
-                        ocr_raw=ocr_r.json()["choices"][0]["message"]["content"]
+                            json={"model":"gpt-4o-mini","messages":ocr_msgs,"max_tokens":500})
+                        ocr_data=ocr_r.json()
+                        if "error" in ocr_data:
+                            log.error(f"OpenAI Vision error: {ocr_data['error']}")
+                            ocr_raw='{"proveedor":"No pude leer","total":0}'
+                        else:
+                            ocr_raw=ocr_data["choices"][0]["message"]["content"]
                     if "```" in ocr_raw: ocr_raw=ocr_raw.split("```")[1].replace("json","").strip()
                     try: factura_data=json.loads(ocr_raw)
                     except: factura_data={"proveedor":"?","total":0,"fecha":"?"}
@@ -279,7 +285,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"3.6-facturas"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"3.7-ocr-fix"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
