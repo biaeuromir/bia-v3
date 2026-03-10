@@ -96,7 +96,15 @@ async def ag_fichaje(s):
     body={"mensaje":s.mensaje_normalizado,"empleado_id":s.empleado["id"],"empleado_nombre":s.empleado["nombre"],"empleado_telefono":s.empleado.get("telefono",""),"coste_hora":s.empleado.get("coste_hora",0),"fuera_madrid_hora":15}
     if s.accion=="confirmar": body={"respuesta":s.mensaje_normalizado,"fecha":""}
     try:
-        async with httpx.AsyncClient(timeout=30) as c: r=await c.post(f"{PYTHON_URL}{ep}",json=body); d=r.json(); s.timer_end("fichaje"); return d.get("mensaje",d.get("message",str(d)))
+        async with httpx.AsyncClient(timeout=30) as c:
+            r=await c.post(f"{PYTHON_URL}{ep}",json=body)
+            d=r.json()
+        msg=d.get("mensaje",d.get("message",str(d)))
+        if "obra" in msg.lower() and "1." in msg:
+            log.info(f"[{s.trace_id}] Saving espera")
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"ok":True}})
+        s.timer_end("fichaje")
+        return msg
     except Exception as e: s.add_error(f"Fichaje: {e}"); s.timer_end("fichaje"); return "Problema con el fichaje. Repite por favor 🔧"
 
 async def ag_saludo(s):
@@ -183,7 +191,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"3.2-esperas"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"3.3-fix"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
