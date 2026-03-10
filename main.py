@@ -11,6 +11,7 @@ SUPA=os.getenv("SUPABASE_URL",""); SK=os.getenv("SUPABASE_KEY","")
 EVO=os.getenv("EVOLUTION_URL",""); EK=os.getenv("EVOLUTION_KEY","")
 INSTANCE=os.getenv("EVOLUTION_INSTANCE","EuromirBia")
 PYTHON_URL=os.getenv("PYTHON_FICHAJES_URL",""); N8N=os.getenv("N8N_URL","")
+N8N_WEBHOOK=os.getenv("N8N_WEBHOOK","https://euromir-n8n.wp2z39.easypanel.host/webhook/whatsapp-euromir")
 OPENAI_KEY=os.getenv("OPENAI_API_KEY",""); PORT=int(os.getenv("PORT","8001"))
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"), format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -174,7 +175,19 @@ async def webhook(req:Request):
         msg=data.get("data",{}); remote=msg.get("key",{}).get("remoteJid",""); fm=msg.get("key",{}).get("fromMe",False)
         if fm: return {"ok":True}
         tel=remote.replace("@s.whatsapp.net","")
-        cont=msg.get("message",{}).get("conversation","") or msg.get("message",{}).get("extendedTextMessage",{}).get("text","")
+        # Detect message type
+        m=msg.get("message",{})
+        cont=m.get("conversation","") or m.get("extendedTextMessage",{}).get("text","")
+        has_image=bool(m.get("imageMessage"))
+        has_audio=bool(m.get("audioMessage"))
+        has_doc=bool(m.get("documentMessage"))
+        # Forward non-text to n8n WF-1
+        if has_image or has_audio or has_doc:
+            log.info(f"Forwarding media to n8n: img={has_image} audio={has_audio} doc={has_doc}")
+            try:
+                async with httpx.AsyncClient(timeout=30) as fc: await fc.post(N8N_WEBHOOK,json=data)
+            except Exception as e: log.error(f"Forward to n8n failed: {e}")
+            return {"ok":True,"forwarded":"n8n"}
         if not cont or not tel: return {"ok":True}
         emps=await db_get("empleados",f"telefono=eq.{tel}&select=*")
         if not emps: await wa(f"{tel}@s.whatsapp.net","No estás registrado. Contacta con tu encargado."); return {"ok":True}
@@ -191,7 +204,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"3.3-fix"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"3.4-forward"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
