@@ -145,6 +145,27 @@ async def procesar(s):
             async with httpx.AsyncClient(timeout=10) as c: await c.delete(f"{SUPA}/rest/v1/bia_esperas?id=eq.{esp['id']}",headers={"apikey":SK,"Authorization":f"Bearer {SK}"})
         except: pass
         # If n8n is waiting for a response, forward text to n8n
+        if esp.get("tipo")=="factura_obra":
+            log.info(f"[{s.trace_id}] Factura obra selection: {s.mensaje_normalizado}")
+            ctx=esp.get("contexto",{}) or {}
+            factura=ctx.get("factura",{})
+            obras_ids=ctx.get("obras",[])
+            # Parse selection
+            try:
+                sel=int(s.mensaje_normalizado.strip())-1
+                obras_full=await db_get("obras","select=id,nombre&estado=eq.En curso&order=nombre")
+                if 0<=sel<len(obras_full):
+                    obra=obras_full[sel]
+                    # Register gasto
+                    gasto={"proveedor":factura.get("proveedor","?"),"concepto":factura.get("concepto",""),"base":factura.get("base_imponible",0),"iva":factura.get("iva_importe",0),"total":factura.get("total",0),"fecha_factura":factura.get("fecha",""),"obra":obra["nombre"],"obra_id":obra["id"],"trimestre":"T1-2026","empleado_id":s.empleado.get("id",0),"empleado_nombre":s.empleado.get("nombre","")}
+                    await db_post("gastos",gasto)
+                    s.respuesta=f"✅ Gasto registrado!\n\nProveedor: {factura.get('proveedor','?')}\nTotal: {factura.get('total',0)}€\nObra: {obra['nombre']}"
+                else:
+                    s.respuesta="Número no válido. Repite por favor."
+            except:
+                s.respuesta="No entendí. Dime el número de la obra."
+            s.dominio="FACTURA"; s.dominio_fuente="espera"; s.duracion_ms=int((time.time()-t0)*1000)
+            await guardar_ejecucion(s); return s
         if esp.get("tipo")=="n8n_pending":
             log.info(f"[{s.trace_id}] Forwarding text to n8n (espera n8n_pending)")
             try:
@@ -192,13 +213,55 @@ async def webhook(req:Request):
         has_audio=bool(m.get("audioMessage"))
         has_doc=bool(m.get("documentMessage"))
         # Forward non-text to n8n WF-1
-        if has_image or has_audio or has_doc:
-            log.info(f"Forwarding media to n8n: img={has_image} audio={has_audio} doc={has_doc}")
+        if has_image:
+            log.info(f"Image received from {tel}")
+            emps=await db_get("empleados",f"telefono=eq.{tel}&select=*")
+            emp=emps[0] if emps else {"id":0,"nombre":"?","telefono":tel}
+            # Download image from Evolution
+            img_msg=m.get("imageMessage",{})
+            media_url=img_msg.get("url","") or msg.get("mediaUrl","")
+            caption=img_msg.get("caption","") or m.get("conversation","")
+            try:
+                import base64
+                if media_url:
+                    async with httpx.AsyncClient(timeout=30) as dl:
+                        mr=await dl.get(media_url)
+                        img_b64=base64.b64encode(mr.content).decode()
+                else:
+                    img_b64=""
+                # OCR with GPT-4o Vision
+                if img_b64:
+                    ocr_prompt="Analiza esta factura/ticket. Extrae: proveedor, CIF, fecha (YYYY-MM-DD), concepto, base_imponible, iva_porcentaje, iva_importe, total. Responde JSON sin markdown."
+                    ocr_msgs=[{"role":"user","content":[{"type":"text","text":ocr_prompt},{"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{img_b64}"}}]}]
+                    async with httpx.AsyncClient(timeout=60) as oc:
+                        ocr_r=await oc.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
+                            json={"model":"gpt-4o","messages":ocr_msgs,"max_tokens":500})
+                        ocr_raw=ocr_r.json()["choices"][0]["message"]["content"]
+                    if "```" in ocr_raw: ocr_raw=ocr_raw.split("```")[1].replace("json","").strip()
+                    try: factura_data=json.loads(ocr_raw)
+                    except: factura_data={"proveedor":"?","total":0,"fecha":"?"}
+                else:
+                    factura_data={"proveedor":"Desconocido","total":0}
+                # Get obras for selection
+                obras=await db_get("obras","select=id,nombre&estado=eq.En curso&order=nombre")
+                obras_txt="\n".join([f"{i+1}. *{o['nombre']}*" for i,o in enumerate(obras)])
+                prov=factura_data.get("proveedor","?")
+                total=factura_data.get("total",0)
+                fecha=factura_data.get("fecha","?")
+                resp=f"He leido esta factura:\n\nProveedor: {prov}\nFecha: {fecha}\nTotal: {total}EUR\n\n¿A qué obra va? 🏗️\n\n{obras_txt}\n\nDime número o nombre 😊"
+                await wa(f"{tel}@s.whatsapp.net",resp)
+                # Save espera with factura data
+                await db_post("bia_esperas",{"telefono":tel,"empleado_id":emp.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":{"factura":factura_data,"obras":[o["id"] for o in obras]}})
+                await db_post("bia_ejecuciones",{"trace_id":str(uuid.uuid4())[:8],"telefono":tel,"empleado_id":emp.get("id"),"empleado_nombre":emp.get("nombre",""),"input_original":"[imagen]","dominio":"FACTURA","dominio_fuente":"media","estado_final":"ok","respuesta":resp[:500],"duracion_ms":0})
+            except Exception as e:
+                log.error(f"Image processing error: {e}")
+                await wa(f"{tel}@s.whatsapp.net",f"No pude leer la factura. ¿Puedes enviarla más clara? 🔧")
+            return {"ok":True}
+        if has_audio or has_doc:
+            log.info(f"Forwarding audio/doc to n8n")
             try:
                 async with httpx.AsyncClient(timeout=30) as fc: await fc.post(N8N_WEBHOOK,json=data)
-                # Save espera so next text also goes to n8n
-                await db_post("bia_esperas",{"telefono":tel,"empleado_id":0,"tipo":"n8n_pending","dominio":"N8N","contexto":{"media":True}})
-            except Exception as e: log.error(f"Forward to n8n failed: {e}")
+            except Exception as e: log.error(f"Forward: {e}")
             return {"ok":True,"forwarded":"n8n"}
         if not cont or not tel: return {"ok":True}
         emps=await db_get("empleados",f"telefono=eq.{tel}&select=*")
@@ -216,7 +279,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"3.5-n8n-espera"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"3.6-facturas"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
