@@ -144,6 +144,16 @@ async def procesar(s):
         try:
             async with httpx.AsyncClient(timeout=10) as c: await c.delete(f"{SUPA}/rest/v1/bia_esperas?id=eq.{esp['id']}",headers={"apikey":SK,"Authorization":f"Bearer {SK}"})
         except: pass
+        # If n8n is waiting for a response, forward text to n8n
+        if esp.get("tipo")=="n8n_pending":
+            log.info(f"[{s.trace_id}] Forwarding text to n8n (espera n8n_pending)")
+            try:
+                fwd={"data":{"key":{"remoteJid":f"{s.telefono}@s.whatsapp.net","fromMe":False},"message":{"conversation":s.mensaje_original}}}
+                async with httpx.AsyncClient(timeout=30) as fc: await fc.post(N8N_WEBHOOK,json=fwd)
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":0,"tipo":"n8n_pending","dominio":"N8N","contexto":{"text":True}})
+            except Exception as e: log.error(f"Forward to n8n: {e}")
+            s.dominio="N8N"; s.dominio_fuente="espera"; s.respuesta=""; s.duracion_ms=int((time.time()-t0)*1000)
+            await guardar_ejecucion(s); return s
         s.dominio=esp["dominio"]; s.dominio_fuente="espera"; s.confianza=1.0; s.accion="continuar"
         s.timer_start("agente")
         try: s.respuesta=await AG.get(s.dominio,ag_general)(s)
@@ -186,6 +196,8 @@ async def webhook(req:Request):
             log.info(f"Forwarding media to n8n: img={has_image} audio={has_audio} doc={has_doc}")
             try:
                 async with httpx.AsyncClient(timeout=30) as fc: await fc.post(N8N_WEBHOOK,json=data)
+                # Save espera so next text also goes to n8n
+                await db_post("bia_esperas",{"telefono":tel,"empleado_id":0,"tipo":"n8n_pending","dominio":"N8N","contexto":{"media":True}})
             except Exception as e: log.error(f"Forward to n8n failed: {e}")
             return {"ok":True,"forwarded":"n8n"}
         if not cont or not tel: return {"ok":True}
@@ -204,7 +216,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"3.4-forward"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"3.5-n8n-espera"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
