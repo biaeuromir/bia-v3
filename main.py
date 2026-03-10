@@ -230,35 +230,34 @@ async def webhook(req:Request):
             emp=emps[0] if emps else {"id":0,"nombre":"?","telefono":tel}
             # Download image from Evolution
             img_msg=m.get("imageMessage",{})
-            media_url=img_msg.get("url","") or msg.get("mediaUrl","")
             caption=img_msg.get("caption","") or m.get("conversation","")
+            msg_key=msg.get("key",{})
             try:
                 import base64
-                if media_url:
-                    async with httpx.AsyncClient(timeout=30) as dl:
-                        mr=await dl.get(media_url)
-                        img_b64=base64.b64encode(mr.content).decode()
-                else:
-                    img_b64=""
+                # Use Evolution API to get decrypted base64
+                img_b64=""
+                async with httpx.AsyncClient(timeout=30) as dl:
+                    evo_r=await dl.post(f"{EVO}/chat/getBase64FromMediaMessage/{INSTANCE}",
+                        headers={"apikey":EK,"Content-Type":"application/json"},
+                        json={"message":{"key":msg_key},"convertToMp4":False})
+                    if evo_r.status_code==200 or evo_r.status_code==201:
+                        evo_data=evo_r.json()
+                        img_b64=evo_data.get("base64","")
+                        log.info(f"Evolution base64: {len(img_b64)} chars")
+                    else:
+                        log.error(f"Evolution media: {evo_r.status_code} {evo_r.text[:200]}")
                 # OCR with GPT-4o Vision
-                if media_url:
+                if img_b64:
                     ocr_prompt="Analiza esta factura/ticket. Extrae: proveedor, CIF, fecha (YYYY-MM-DD), concepto, base_imponible, iva_porcentaje, iva_importe, total. Responde SOLO JSON sin markdown."
-                    # Try URL first, then base64
-                    ocr_msgs=[{"role":"user","content":[{"type":"text","text":ocr_prompt},{"type":"image_url","image_url":{"url":media_url}}]}]
+                    mime=img_msg.get("mimetype","image/jpeg")
+                    ocr_msgs=[{"role":"user","content":[{"type":"text","text":ocr_prompt},{"type":"image_url","image_url":{"url":f"data:{mime};base64,{img_b64}"}}]}]
                     async with httpx.AsyncClient(timeout=60) as oc:
                         ocr_r=await oc.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
                             json={"model":"gpt-4o-mini","messages":ocr_msgs,"max_tokens":500})
                         ocr_data=ocr_r.json()
-                        log.info(f"OCR response status: {'ok' if 'choices' in ocr_data else ocr_data.get('error',{}).get('message','?')}")
-                        if "error" in ocr_data and img_b64:
-                            log.info("URL failed, trying base64...")
-                            mime=img_msg.get("mimetype","image/jpeg")
-                            ocr_msgs2=[{"role":"user","content":[{"type":"text","text":ocr_prompt},{"type":"image_url","image_url":{"url":f"data:{mime};base64,{img_b64}"}}]}]
-                            ocr_r2=await oc.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},
-                                json={"model":"gpt-4o-mini","messages":ocr_msgs2,"max_tokens":500})
-                            ocr_data=ocr_r2.json()
+                        log.info(f"OCR status: {'ok' if 'choices' in ocr_data else ocr_data.get('error',{}).get('message','?')}")
                         if "error" in ocr_data:
-                            log.error(f"OpenAI Vision error: {ocr_data['error']}")
+                            log.error(f"OpenAI Vision error: {ocr_data.get('error')}")
                             ocr_raw='{"proveedor":"No pude leer","total":0}'
                         else:
                             ocr_raw=ocr_data["choices"][0]["message"]["content"]
@@ -304,7 +303,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"3.9-gastos-fix"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"4.0-evo-media"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
