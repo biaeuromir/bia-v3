@@ -189,11 +189,11 @@ async def ag_fichaje(s):
 async def ag_saludo(s):
     n=s.empleado.get("apodo") or s.empleado.get("nombre","compañero")
     nt=s.empleado.get("notas_bia","")
-    return await gpt(f"El empleado {n} te saluda: \"{s.mensaje_normalizado}\". Responde un saludo corto y cercano.",f"Eres Bia, secretaria de Euromir. Cercana, directa, con chispa. Hablas con {n}. Notas: {notas}. Max 2 líneas para WhatsApp.","gpt-4o-mini",100) or f"¡Buenas, {n}! Dime 💪"
+    return await gpt(f"El empleado {n} te saluda: \"{s.mensaje_normalizado}\". Responde un saludo corto y cercano.",f"Eres Bia, secretaria de Euromir. Cercana, directa, con chispa. Hablas con {n}. Notas: {nt}. Max 2 líneas para WhatsApp.","gpt-4o-mini",100) or f"¡Buenas, {n}! Dime 💪"
 
 async def ag_obras(s):
     s.timer_start("obras"); obras=await db_get("obras","select=id,nombre,estado,direccion,presupuesto_total&estado=eq.En curso&order=nombre")
-    n=s.empleado.get("apodo") or s.empleado.get("nombre",""); r=await gpt(f"Obras en curso:\n{json.dumps(obras,ensure_ascii=False)[:2000]}\n\nPregunta: \"{s.mensaje_normalizado}\"\nCorto para WhatsApp.",f"Eres Bia de Euromir. Hablas con {n}.","gpt-4o")
+    n=s.empleado.get("apodo") or s.empleado.get("nombre",""); r=await gpt(f"Obras en curso:\n{json.dumps(obras,ensure_ascii=False)[:2000]}\n\nPregunta: \"{s.mensaje_normalizado}\"\nCorto para WhatsApp.",BIA_PERSONA+f" Hablas con {n}.","gpt-4o")
     s.timer_end("obras"); return r or "No pude consultar obras. 🔧"
 
 async def ag_finanzas(s):
@@ -570,7 +570,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"5.6-dedup"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"5.6-fix"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
