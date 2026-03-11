@@ -69,6 +69,15 @@ async def gpt(prompt,system="",model="gpt-4o-mini",max_t=500):
             return r.json()["choices"][0]["message"]["content"]
     except Exception as e: log.error(f"GPT error: {e}"); return ""
 
+BIA_PERSONA = "Eres Bia, secretaria inteligente de Euromir. Cercana, directa, con chispa y humor. Emojis con naturalidad. CORTO para WhatsApp. Adapta el tono segun las notas del empleado."
+
+async def cargar_historial(tel, limit=20):
+    msgs=await db_get("bia_chat_history",f"telefono=eq.{tel}&order=created_at.desc&limit={limit}&select=role,content")
+    return list(reversed(msgs))
+
+async def guardar_msg(tel, eid, role, content):
+    await db_post("bia_chat_history",{"telefono":tel,"empleado_id":eid,"role":role,"content":(content or "")[:1000]})
+
 # DETECTOR DETERMINISTA
 PF=[re.compile(r'\d{1,2}[:.h]\d{0,2}\s*(a|h?asta|-)\s*\d{1,2}',re.I),re.compile(r'de\s+\d{1,2}\s+(a|h?asta)\s+\d{1,2}',re.I),
     re.compile(r'\d{1,2}\s*-\s*\d{1,2}'),re.compile(r'empiezo|empezado|llego|ya estoy|comienzo',re.I),
@@ -179,7 +188,7 @@ async def ag_fichaje(s):
 
 async def ag_saludo(s):
     n=s.empleado.get("apodo") or s.empleado.get("nombre","compañero")
-    notas=s.empleado.get("notas_bia","")[:200]
+    nt=s.empleado.get("notas_bia","")
     return await gpt(f"El empleado {n} te saluda: \"{s.mensaje_normalizado}\". Responde un saludo corto y cercano.",f"Eres Bia, secretaria de Euromir. Cercana, directa, con chispa. Hablas con {n}. Notas: {notas}. Max 2 líneas para WhatsApp.","gpt-4o-mini",100) or f"¡Buenas, {n}! Dime 💪"
 
 async def ag_obras(s):
@@ -198,8 +207,11 @@ async def ag_empleados(s):
     s.timer_end("emps"); return r or "No pude consultar empleados. 🔧"
 
 async def ag_general(s):
-    n=s.empleado.get("apodo") or s.empleado.get("nombre",""); nt=s.empleado.get("notas_bia","")[:300]
-    return await gpt(s.mensaje_normalizado,f"Eres Bia, secretaria de Euromir. Cercana, directa. Hablas con {n}. Notas: {nt}. CORTO para WhatsApp.","gpt-4o") or f"Perdona {n}, no te entendí 🤔"
+    n=s.empleado.get("apodo") or s.empleado.get("nombre","")
+    nt=s.empleado.get("notas_bia","")
+    hist=await cargar_historial(s.telefono)
+    h="\n".join([("Emp: " if m.get("role")=="user" else "Bia: ")+m.get("content","") for m in hist[-8:]]) if hist else ""
+    return await gpt(s.mensaje_normalizado,BIA_PERSONA+f"\nHablas con: {n}\nNotas: {nt}\nHistorial:\n{h}","gpt-4o") or f"Perdona {n}, no te entendí 🤔"
 
 
 async def ag_obra_alta(s):
@@ -371,6 +383,13 @@ async def webhook(req:Request):
         if event not in("messages.upsert",""): return {"ok":True}
         msg=data.get("data",{}); remote=msg.get("key",{}).get("remoteJid",""); fm=msg.get("key",{}).get("fromMe",False)
         if fm: return {"ok":True}
+        # Idempotency: skip duplicate messages (same messageId)
+        msg_id=msg.get("key",{}).get("id","")
+        if msg_id:
+            existing=await db_get("bia_ejecuciones",f"metadata=cs.{{\"msg_id\":\"{msg_id}\"}}&limit=1")
+            if existing:
+                log.info(f"Duplicate message {msg_id}, skipping")
+                return {"ok":True,"duplicate":True}
         tel=remote.replace("@s.whatsapp.net","")
         msg_key=msg.get("key",{})
         # Detect message type
@@ -510,7 +529,9 @@ async def webhook(req:Request):
                         # Process transcribed text through normal router
                         s=BiaState(telefono=tel,mensaje_original=transcription,tipo_mensaje="audio",empleado=emp)
                         s=await procesar(s)
-                        if s.respuesta: await wa(f"{tel}@s.whatsapp.net",s.respuesta)
+                        if s.respuesta:
+                            await wa(f"{tel}@s.whatsapp.net",s.respuesta)
+                            await guardar_msg(tel,s.empleado.get("id",0),"assistant",s.respuesta)
                         return {"ok":True,"trace_id":s.trace_id}
                     else:
                         await wa(f"{tel}@s.whatsapp.net","No pude entender el audio. ¿Puedes escribirlo? 🎤")
@@ -527,10 +548,17 @@ async def webhook(req:Request):
             except Exception as e: log.error(f"Forward: {e}")
             return {"ok":True,"forwarded":"n8n"}
         if not cont or not tel: return {"ok":True}
+        # Dedupe: if last message from this phone is identical, skip
+        last_msgs=await db_get("bia_chat_history",f"telefono=eq.{tel}&role=eq.user&order=created_at.desc&limit=1&select=content")
+        if last_msgs and last_msgs[0].get("content","")==cont:
+            log.info(f"Duplicate text from {tel}, skipping")
+            return {"ok":True}
         emps=await db_get("empleados",f"telefono=eq.{tel}&select=*")
         if not emps: await wa(f"{tel}@s.whatsapp.net","No estás registrado. Contacta con tu encargado."); return {"ok":True}
         s=BiaState(telefono=tel,mensaje_original=cont,empleado=emps[0]); s=await procesar(s)
-        if s.respuesta: await wa(f"{tel}@s.whatsapp.net",s.respuesta)
+        if s.respuesta:
+            await wa(f"{tel}@s.whatsapp.net",s.respuesta)
+            await guardar_msg(tel,s.empleado.get("id",0),"assistant",s.respuesta)
         return {"ok":True,"trace_id":s.trace_id}
     except Exception as e: log.error(f"Webhook: {e}"); return {"ok":False,"error":str(e)}
 
@@ -542,7 +570,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"5.4-fichaje-retry"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"5.6-dedup"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
