@@ -264,7 +264,8 @@ async def procesar(s):
                 async with httpx.AsyncClient(timeout=60) as oc:
                     wr=await oc.post(f"{N8N}/webhook/alta-obra",json=obra_data)
                     log.info(f"WF-15 response: {wr.status_code}")
-                s.respuesta=f"\u2705 ¡Obra creada!\n\n\U0001f3d7 {ctx.get('nombre','')}\n\U0001f4cd {ctx.get('direccion','')}\n{'\U0001f30d Fuera de Madrid' if ctx.get('fuera_madrid') else '\U0001f3e0 Madrid'}\n\U0001f477 Encargado: {enc['nombre']}\n\n\U0001f4c1 Carpeta Drive + Sheet creados"
+                nombre_o=ctx.get("nombre",""); dir_o=ctx.get("direccion",""); fm="Fuera de Madrid" if ctx.get("fuera_madrid") else "Madrid"
+                s.respuesta=f"✅ Obra creada!\n\n🏗 {nombre_o}\n📍 {dir_o}\n🌍 {fm}\n👷 Encargado: {enc['nombre']}\n\n📁 Carpeta Drive + Sheet creados"
             except Exception as e:
                 log.error(f"WF-15 error: {e}")
                 s.respuesta="Error creando la obra. Inténtalo de nuevo."
@@ -457,7 +458,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"4.5-obras"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"4.5-fix"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
