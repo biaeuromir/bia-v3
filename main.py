@@ -81,6 +81,30 @@ def detectar(txt):
     if PS.match(t): return "SALUDO","responder",1.0
     return "AMBIGUO","clasificar",0.0
 
+
+def normalizar_horas(texto):
+    """Normaliza horas: '6 de la tarde'→'18', 'de 8 a 5'→'de 8 a 17'"""
+    import re
+    t = texto
+    # "X de la tarde/noche" → X+12
+    def tarde_fix(m):
+        h = int(m.group(1))
+        return str(h + 12 if h < 12 else h)
+    t = re.sub(r'(\d{1,2})\s*(?:de la tarde|de la noche|pm|p\.m\.)', tarde_fix, t, flags=re.I)
+    t = re.sub(r'(\d{1,2})\s*(?:de la mañana|am|a\.m\.)', r'\1', t, flags=re.I)
+    # Smart PM: "de X a Y" where Y < X and Y < 13 → Y is PM
+    def smart_pm(m):
+        pre = m.group(1)
+        h1 = int(m.group(2))
+        mid = m.group(3)
+        h2 = int(m.group(4))
+        rest = m.group(5) or ""
+        if h2 < h1 and h2 < 13:
+            h2 += 12
+        return f"{pre}{h1}{mid}{h2}{rest}"
+    t = re.sub(r'(de\s+)(\d{1,2})(\s*(?:a|h?asta|-)\s*)(\d{1,2})(\b)', smart_pm, t, flags=re.I)
+    return t
+
 # CLASIFICADOR GPT
 async def clasificar(txt):
     p=f'Clasifica en UN dominio y da confianza. Dominios: FICHAJE,OBRAS,FINANZAS,EMPLEADOS,DOCUMENTOS,INVENTARIO,GENERAL. JSON: {{"dominio":"OBRAS","confianza":0.85}}. Mensaje: "{txt[:500]}"'
@@ -136,7 +160,7 @@ AG={"FICHAJE":ag_fichaje,"SALUDO":ag_saludo,"OBRAS":ag_obras,"FINANZAS":ag_finan
 
 # ROUTER
 async def procesar(s):
-    t0=time.time(); s.trace_id=str(uuid.uuid4())[:8]; s.mensaje_normalizado=s.mensaje_original.strip()
+    t0=time.time(); s.trace_id=str(uuid.uuid4())[:8]; s.mensaje_normalizado=normalizar_horas(s.mensaje_original.strip())
     log.info(f"[{s.trace_id}] 📩 {s.empleado.get('nombre','?')}: {s.mensaje_original[:80]}")
     # Comprobar espera activa
     esperas=await db_get("bia_esperas",f"telefono=eq.{s.telefono}&order=created_at.desc&limit=1")
@@ -356,7 +380,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"4.2-complete"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"4.4-smart-pm"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
