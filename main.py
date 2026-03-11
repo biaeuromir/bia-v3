@@ -254,8 +254,10 @@ async def procesar(s):
                     except Exception as e: log.error(f"Sheet write: {e}")
                     s.respuesta=f"✅ Gasto registrado!\n\nProveedor: {prov}\nTotal: {tot}€\nObra: {obra['nombre']}\nTrimestre: {trim}\n\nGuardado en BD + Sheet ✅"
                 else:
-                    s.respuesta="Número no válido. Repite por favor."
+                    await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":ctx})
+                    s.respuesta="Número no válido. Dime el número correcto."
             except:
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":ctx})
                 s.respuesta="No entendí. Dime el número de la obra."
             s.dominio="FACTURA"; s.dominio_fuente="espera"; s.duracion_ms=int((time.time()-t0)*1000)
             await guardar_ejecucion(s); return s
@@ -531,7 +533,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"5.1-url-fix"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"5.3-regex-fix"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
