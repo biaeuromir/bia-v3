@@ -167,7 +167,7 @@ async def ag_obra_alta(s):
 
 async def ag_obra_baja(s):
     """Close an obra"""
-    obras=await db_get("obras","select=id,nombre&estado=eq.En curso&order=nombre")
+    obras=await db_get("obras","select=id,nombre,spreadsheet_id&estado=eq.En curso&order=nombre")
     lista="\n".join([f"{i+1}. *{o['nombre']}*" for i,o in enumerate(obras)])
     await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_baja","dominio":"OBRA_BAJA","contexto":{"obras_ids":[o["id"] for o in obras]}})
     return f"¿Qué obra quieres cerrar?\n\n{lista}\n\nDime número o nombre"
@@ -194,7 +194,7 @@ async def procesar(s):
             # Parse selection
             try:
                 sel=int(s.mensaje_normalizado.strip())-1
-                obras_full=await db_get("obras","select=id,nombre&estado=eq.En curso&order=nombre")
+                obras_full=await db_get("obras","select=id,nombre,spreadsheet_id&estado=eq.En curso&order=nombre")
                 if 0<=sel<len(obras_full):
                     obra=obras_full[sel]
                     # Register gasto
@@ -274,7 +274,7 @@ async def procesar(s):
         # OBRA BAJA
         if esp.get("tipo")=="obra_baja":
             ctx=esp.get("contexto",{}) or {}
-            obras=await db_get("obras","select=id,nombre&estado=eq.En curso&order=nombre")
+            obras=await db_get("obras","select=id,nombre,spreadsheet_id&estado=eq.En curso&order=nombre")
             try:
                 sel=int(s.mensaje_normalizado.strip())-1
                 obra=obras[sel] if 0<=sel<len(obras) else None
@@ -378,7 +378,7 @@ async def webhook(req:Request):
                 else:
                     factura_data={"proveedor":"Desconocido","total":0}
                 # Get obras for selection
-                obras=await db_get("obras","select=id,nombre&estado=eq.En curso&order=nombre")
+                obras=await db_get("obras","select=id,nombre,spreadsheet_id&estado=eq.En curso&order=nombre")
                 obras_txt="\n".join([f"{i+1}. *{o['nombre']}*" for i,o in enumerate(obras)])
                 prov=factura_data.get("proveedor","?")
                 total=factura_data.get("total",0)
@@ -458,7 +458,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"4.5-fix"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"4.6-sheet-fix"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
