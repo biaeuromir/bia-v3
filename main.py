@@ -161,12 +161,21 @@ async def ag_fichaje(s):
             r=await c.post(f"{PYTHON_URL}{ep}",json=body)
             d=r.json()
         msg=d.get("mensaje",d.get("message",str(d)))
+        # If Python returned an error, re-save espera for retry
+        if d.get("error") or "error" in str(d).lower()[:50]:
+            if s.dominio_fuente == "espera":
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
         if "obra" in msg.lower() and "1." in msg:
             log.info(f"[{s.trace_id}] Saving espera")
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"ok":True}})
         s.timer_end("fichaje")
         return msg
-    except Exception as e: s.add_error(f"Fichaje: {e}"); s.timer_end("fichaje"); return "Problema con el fichaje. Repite por favor 🔧"
+    except Exception as e:
+        s.add_error(f"Fichaje: {e}"); s.timer_end("fichaje")
+        # Re-save espera so user can retry obra selection
+        if s.dominio_fuente == "espera":
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
+        return "Problema con el fichaje. Repite el número de obra 🔧"
 
 async def ag_saludo(s):
     n=s.empleado.get("apodo") or s.empleado.get("nombre","compañero")
@@ -533,7 +542,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"5.3-regex-fix"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"5.4-fichaje-retry"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
