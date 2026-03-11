@@ -68,7 +68,7 @@ async def gpt(prompt,system="",model="gpt-4o-mini",max_t=500):
     except Exception as e: log.error(f"GPT error: {e}"); return ""
 
 # DETECTOR DETERMINISTA
-PF=[re.compile(r'\d{1,2}[:.h]\d{0,2}\s*(a|hasta|-)\s*\d{1,2}',re.I),re.compile(r'de\s+\d{1,2}\s+(a|hasta)\s+\d{1,2}',re.I),
+PF=[re.compile(r'\d{1,2}[:.h]\d{0,2}\s*(a|h?asta|-)\s*\d{1,2}',re.I),re.compile(r'de\s+\d{1,2}\s+(a|h?asta)\s+\d{1,2}',re.I),
     re.compile(r'\d{1,2}\s*-\s*\d{1,2}'),re.compile(r'empiezo|empezado|llego|ya estoy|comienzo',re.I),
     re.compile(r'salgo|termino|terminado|acabado|me voy',re.I),re.compile(r'ficho|fichar|fichaje',re.I),re.compile(r'hoy\s+\d{1,2}',re.I)]
 PS=re.compile(r'^(hola|buenos d[ií]as|buenas( tardes| noches)?|qu[eé] tal|hey)[\s!.?]*$',re.I)
@@ -110,7 +110,8 @@ async def ag_fichaje(s):
 
 async def ag_saludo(s):
     n=s.empleado.get("apodo") or s.empleado.get("nombre","compañero")
-    return random.choice([f"¡Buenas, {n}! ¿En qué te ayudo? 😊",f"¡Ey, {n}! Dime 💪",f"¡Hola {n}! Aquí estoy 🏗️"])
+    notas=s.empleado.get("notas_bia","")[:200]
+    return await gpt(f"El empleado {n} te saluda: \"{s.mensaje_normalizado}\". Responde un saludo corto y cercano.",f"Eres Bia, secretaria de Euromir. Cercana, directa, con chispa. Hablas con {n}. Notas: {notas}. Max 2 líneas para WhatsApp.","gpt-4o-mini",100) or f"¡Buenas, {n}! Dime 💪"
 
 async def ag_obras(s):
     s.timer_start("obras"); obras=await db_get("obras","select=id,nombre,estado,direccion,presupuesto_total&estado=eq.En curso&order=nombre")
@@ -170,7 +171,14 @@ async def procesar(s):
                     result=await db_post("gastos",gasto)
                     if "error" in str(result): log.error(f"Gastos insert: {result}")
                     prov=factura.get("proveedor","?"); tot=factura.get("total",0)
-                    s.respuesta=f"✅ Gasto registrado!\n\nProveedor: {prov}\nTotal: {tot}€\nObra: {obra['nombre']}\nTrimestre: {trim}\n\nGuardado en BD ✅"
+                    # Write to n8n for Sheets + Drive + Email
+                    try:
+                        sheet_data={"spreadsheet_id":obra.get("spreadsheet_id",""),"obra_nombre":obra["nombre"],"obra_id":obra["id"],"proveedor":prov,"concepto":factura.get("concepto",""),"base":factura.get("base_imponible",0),"iva":factura.get("iva_importe",0),"total":tot,"fecha":factura.get("fecha",""),"trimestre":trim,"empleado":s.empleado.get("nombre","")}
+                        async with httpx.AsyncClient(timeout=15) as sc:
+                            await sc.post(f"{N8N}/webhook/escribir-gasto-sheet",json=sheet_data)
+                            log.info("Sheet write sent to n8n")
+                    except Exception as e: log.error(f"Sheet write: {e}")
+                    s.respuesta=f"✅ Gasto registrado!\n\nProveedor: {prov}\nTotal: {tot}€\nObra: {obra['nombre']}\nTrimestre: {trim}\n\nGuardado en BD + Sheet ✅"
                 else:
                     s.respuesta="Número no válido. Repite por favor."
             except:
@@ -217,6 +225,7 @@ async def webhook(req:Request):
         msg=data.get("data",{}); remote=msg.get("key",{}).get("remoteJid",""); fm=msg.get("key",{}).get("fromMe",False)
         if fm: return {"ok":True}
         tel=remote.replace("@s.whatsapp.net","")
+        msg_key=msg.get("key",{})
         # Detect message type
         m=msg.get("message",{})
         cont=m.get("conversation","") or m.get("extendedTextMessage",{}).get("text","")
@@ -281,8 +290,52 @@ async def webhook(req:Request):
                 log.error(f"Image processing error: {e}")
                 await wa(f"{tel}@s.whatsapp.net",f"No pude leer la factura. ¿Puedes enviarla más clara? 🔧")
             return {"ok":True}
-        if has_audio or has_doc:
-            log.info(f"Forwarding audio/doc to n8n")
+        if has_audio:
+            log.info(f"Audio received from {tel}")
+            emps=await db_get("empleados",f"telefono=eq.{tel}&select=*")
+            if not emps:
+                await wa(f"{tel}@s.whatsapp.net","No estás registrado.")
+                return {"ok":True}
+            emp=emps[0]
+            try:
+                # Download audio via Evolution API
+                audio_b64=""
+                async with httpx.AsyncClient(timeout=30) as dl:
+                    evo_r=await dl.post(f"{EVO}/chat/getBase64FromMediaMessage/{INSTANCE}",
+                        headers={"apikey":EK,"Content-Type":"application/json"},
+                        json={"message":{"key":msg_key},"convertToMp4":False})
+                    if evo_r.status_code in(200,201):
+                        evo_data=evo_r.json()
+                        audio_b64=evo_data.get("base64","")
+                        log.info(f"Audio base64: {len(audio_b64)} chars")
+                if audio_b64:
+                    import base64 as b64mod
+                    audio_bytes=b64mod.b64decode(audio_b64)
+                    # Transcribe with Whisper
+                    import io
+                    files={"file":("audio.ogg",io.BytesIO(audio_bytes),"audio/ogg")}
+                    async with httpx.AsyncClient(timeout=30) as wc:
+                        wr=await wc.post("https://api.openai.com/v1/audio/transcriptions",
+                            headers={"Authorization":f"Bearer {OPENAI_KEY}"},
+                            data={"model":"whisper-1"},files=files)
+                        transcription=wr.json().get("text","")
+                    log.info(f"Whisper: {transcription[:80]}")
+                    if transcription:
+                        # Process transcribed text through normal router
+                        s=BiaState(telefono=tel,mensaje_original=transcription,tipo_mensaje="audio",empleado=emp)
+                        s=await procesar(s)
+                        if s.respuesta: await wa(f"{tel}@s.whatsapp.net",s.respuesta)
+                        return {"ok":True,"trace_id":s.trace_id}
+                    else:
+                        await wa(f"{tel}@s.whatsapp.net","No pude entender el audio. ¿Puedes escribirlo? 🎤")
+                else:
+                    await wa(f"{tel}@s.whatsapp.net","No pude descargar el audio. Intenta de nuevo 🔧")
+            except Exception as e:
+                log.error(f"Audio error: {e}")
+                await wa(f"{tel}@s.whatsapp.net","Problema con el audio. ¿Puedes escribirlo? 🎤")
+            return {"ok":True}
+        if has_doc:
+            log.info(f"Forwarding doc to n8n")
             try:
                 async with httpx.AsyncClient(timeout=30) as fc: await fc.post(N8N_WEBHOOK,json=data)
             except Exception as e: log.error(f"Forward: {e}")
@@ -303,7 +356,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"4.0-evo-media"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"4.2-complete"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
