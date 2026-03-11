@@ -247,7 +247,7 @@ async def procesar(s):
                     prov=factura.get("proveedor","?"); tot=factura.get("total",0)
                     # Write to n8n for Sheets + Drive + Email
                     try:
-                        sheet_data={"spreadsheet_id":obra.get("spreadsheet_id",""),"obra_nombre":obra["nombre"],"obra_id":obra["id"],"proveedor":prov,"numero_factura":str(factura.get("numero_factura",factura.get("numero",""))),"cif":factura.get("CIF",factura.get("cif","")),"concepto":factura.get("concepto",""),"base":factura.get("base_imponible",0),"iva":factura.get("iva_importe",0),"total":tot,"fecha":factura.get("fecha",""),"trimestre":trim,"empleado":s.empleado.get("nombre",""),"empleado_telefono":s.empleado.get("telefono","")}
+                        sheet_data={"spreadsheet_id":obra.get("spreadsheet_id",""),"obra_nombre":obra["nombre"],"obra_id":obra["id"],"proveedor":prov,"numero_factura":str(factura.get("numero_factura",factura.get("numero",""))),"cif":factura.get("CIF",factura.get("cif","")),"concepto":factura.get("concepto",""),"base":factura.get("base_imponible",0),"iva":factura.get("iva_importe",0),"total":tot,"fecha":factura.get("fecha",""),"trimestre":trim,"empleado":s.empleado.get("nombre",""),"empleado_telefono":s.empleado.get("telefono",""),"drive_url":ctx.get("drive_url","")}
                         async with httpx.AsyncClient(timeout=15) as sc:
                             await sc.post(f"{N8N}/webhook/escribir-gasto-sheet",json=sheet_data)
                             log.info("Sheet write sent to n8n")
@@ -531,7 +531,7 @@ async def test(req:Request):
         "respuesta":s.respuesta,"necesita_humano":s.necesita_humano,"errores":s.errores,"duracion_ms":s.duracion_ms,"timestamps":s.timestamps}
 
 @app.get("/health")
-async def health(): return {"status":"ok","service":"bia-v3","version":"5.0-drive-complete"}
+async def health(): return {"status":"ok","service":"bia-v3","version":"5.1-url-fix"}
 
 if __name__=="__main__":
     import uvicorn; uvicorn.run(app,host="0.0.0.0",port=PORT)
