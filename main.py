@@ -262,6 +262,25 @@ async def ag_fichaje(s):
     emp_id=s.empleado.get("id",0)
     hoy=date.today().isoformat()
     
+    # Continuation from espera (obra selection) — forward directly to backend without re-parsing
+    if s.accion=="continuar" and s.dominio_fuente=="espera":
+        try:
+            body={"mensaje":texto,"empleado_id":emp_id,"empleado_nombre":s.empleado.get("nombre",""),
+                  "empleado_telefono":s.empleado.get("telefono",""),"coste_hora":s.empleado.get("coste_hora",0),"fuera_madrid_hora":15}
+            async with httpx.AsyncClient(timeout=30) as c:
+                r=await c.post(f"{PYTHON_URL}/procesar-fichaje",json=body)
+                d=r.json()
+            msg=d.get("mensaje",d.get("message",str(d)))
+            if d.get("error") or "error" in str(d).lower()[:50]:
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
+            if "obra" in msg.lower() and "1." in msg:
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"ok":True}})
+            s.timer_end("fichaje"); return msg
+        except Exception as e:
+            s.add_error(f"Fichaje espera: {e}"); s.timer_end("fichaje")
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
+            return "Problema con el fichaje. Repite el numero de obra \U0001f527"
+    
     # Confirmation flow — pass through to backend
     if s.accion=="confirmar":
         try:
@@ -293,7 +312,15 @@ async def ag_fichaje(s):
         s.timer_end("fichaje")
         return f"No estoy segura de las horas: {ent_raw} a {sal_raw}. Puedes repetir con formato claro? Ej: 9-17 \U0001f550"
     
-    elif pf.get("det") and (pf.get("needs_llm") or pf.get("needs_times")):
+    elif pf.get("det") and pf.get("needs_times") and not pf.get("needs_llm"):
+        # "8horas" pattern — we know duration but need actual times
+        solo_h=pf.get("solo_h",0)
+        await log_fichaje(s.trace_id,emp_id,s.telefono,s.mensaje_original,texto,patron,"regex",
+                         horas_raw,None,None,False,False,False,None,None,"","aclaracion","NEEDS_TIMES",int((time.time()-t0)*1000))
+        s.timer_end("fichaje")
+        return f"{solo_h} horas, vale! Pero necesito entrada y salida. Ej: 9-17 \U0001f550"
+    
+    elif pf.get("det") and pf.get("needs_llm"):
         # ═══ STEP 1B: Mini LLM fallback ═══
         metodo="llm"
         log.info(f"[{s.trace_id}] Fallback LLM para: {texto[:60]}")
@@ -304,6 +331,8 @@ async def ag_fichaje(s):
             await log_fichaje(s.trace_id,emp_id,s.telefono,s.mensaje_original,texto,patron,metodo,
                              horas_raw,None,None,False,False,False,None,conf_llm,"","error","LLM_REJECTED",llm_r.get("parseo_ms",0))
             s.timer_end("fichaje")
+            if pf.get("pat")=="kw":
+                return "Dime las horas de entrada y salida. Ej: 9-17 \U0001f550"
             return None  # Not a fichaje, route to general
         if llm_r.get("needs_clarification"):
             ent_llm=llm_r.get("entrada","?");sal_llm=llm_r.get("salida","?")
@@ -314,8 +343,10 @@ async def ag_fichaje(s):
         
         if not llm_r.get("es_fichaje") or not llm_r.get("ok"):
             await log_fichaje(s.trace_id,emp_id,s.telefono,s.mensaje_original,texto,patron,metodo,
-                             horas_raw,None,None,False,False,False,None,conf_llm,"","error","LLM_NOT_FICHAJE",llm_r.get("parseo_ms",0))
+                             horas_raw,None,None,False,False,False,None,conf_llm,"","aclaracion","NEEDS_HOURS",llm_r.get("parseo_ms",0))
             s.timer_end("fichaje")
+            if pf.get("pat")=="kw":
+                return "Dime las horas de entrada y salida. Ej: 9-17 \U0001f550"
             return None  # Not a fichaje — return None to let router handle as general
         
         entrada=llm_r.get("entrada");salida=llm_r.get("salida")
@@ -350,8 +381,7 @@ async def ag_fichaje(s):
     # ═══ STEP 4: Register via Python fichajes backend ═══
     body={"mensaje":texto,"empleado_id":emp_id,"empleado_nombre":s.empleado.get("nombre",""),
           "empleado_telefono":s.empleado.get("telefono",""),"coste_hora":s.empleado.get("coste_hora",0),
-          "fuera_madrid_hora":15,"signature":sig_provisional,
-          "parsed_entrada":entrada,"parsed_salida":salida,"parsed_overnight":overnight}
+          "fuera_madrid_hora":15}
     try:
         async with httpx.AsyncClient(timeout=30) as c:
             r=await c.post(f"{PYTHON_URL}/procesar-fichaje",json=body)
