@@ -375,7 +375,7 @@ async def ag_fichaje(s):
         await log_fichaje(s.trace_id,emp_id,s.telefono,s.mensaje_original,texto,patron,metodo,
                          horas_raw,entrada,salida,overnight,inferred_pm,False,dur,conf_llm,sig_provisional,"duplicado",None,int((time.time()-t0)*1000))
         s.timer_end("fichaje")
-        log.info(f"[{s.trace_id}] Fichaje duplicado: sig={sig}")
+        log.info(f"[{s.trace_id}] Fichaje duplicado: sig={sig_provisional}")
         return "Ya tenia registrado ese fichaje \U0001f44d"
     
     # ═══ STEP 4: Register via Python fichajes backend ═══
@@ -400,7 +400,7 @@ async def ag_fichaje(s):
         
         # ═══ STEP 5: Log detallado ═══
         await log_fichaje(s.trace_id,emp_id,s.telefono,s.mensaje_original,texto,patron,metodo,
-                         horas_raw,entrada,salida,overnight,inferred_pm,False,dur,conf_llm,sig,resultado,None,int((time.time()-t0)*1000))
+                         horas_raw,entrada,salida,overnight,inferred_pm,False,dur,conf_llm,sig_provisional,resultado,None,int((time.time()-t0)*1000))
         s.timer_end("fichaje"); return msg
     except Exception as e:
         s.add_error(f"Fichaje: {e}")
