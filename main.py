@@ -260,7 +260,7 @@ def detectar(txt,empleado_rol=0,tiene_espera_conf=False):
     if PS.match(t): return "SALUDO","responder",1.0
     if re.search(r'nueva obra|registra(r|me)?\s*obra|abrir obra|alta obra|dar de alta obra',t): return "OBRA_ALTA","crear",0.95
     if re.search(r'cerrar obra|baja obra|dar de baja',t): return "OBRA_BAJA","cerrar",0.9
-    if re.search(r'n[oó]mina|sueldo|salario|cu[aá]nto (le )?debo|pagar a|calcul[ae]',t): return "NOMINA","calcular",0.95
+    if re.search(r'n[oó]mina|sueldo|salario|cu[aá]nto (le )?debo|pagar a|calcul[ae]|env[ií]a(me)?\\s.*(n[oó]mina|documento)',t): return "NOMINA","calcular",0.95
     return "AMBIGUO","clasificar",0.0
 
 # ══════════════ CLASIFICADOR GPT ══════════════
@@ -480,41 +480,107 @@ def parsear_nomina(texto,empleado_nombre=""):
         nombre=empleado_nombre
     return {"empleado_nombre":nombre,"mes":mes,"anio":anio}
 
-async def ag_nomina(s):
-    """Calculate payroll with role-based access control"""
-    s.timer_start("nomina")
-    datos=parsear_nomina(s.mensaje_normalizado,s.empleado.get("nombre",""))
-    rol=s.empleado.get("rol",99)
-    mi_nombre=s.empleado.get("nombre","").lower()
-    nombre_pedido=datos.get("empleado_nombre","").lower()
-    # Normalize names: strip, lowercase, compare first+last words to avoid Ana/Anabel false positives
-    def _norm_name(n): parts=n.lower().strip().split(); return (parts[0],parts[-1]) if len(parts)>=2 else (parts[0],"") if parts else ("","")
-    mi_norm=_norm_name(mi_nombre);ped_norm=_norm_name(nombre_pedido)
-    es_propia=mi_norm==ped_norm or (mi_norm[0]==ped_norm[0] and (not ped_norm[1] or mi_norm[1]==ped_norm[1]))
-    log.info(f"[{s.trace_id}] Nomina: {datos} rol={rol} propia={es_propia}")
-    # Access control
-    if rol>=3 and not es_propia:
-        s.timer_end("nomina")
-        return "Solo puedes consultar tu propia nomina \U0001f512"
-    if rol==2 and not es_propia:
-        # Encargado: check if target is admin (rol 1)
-        target=await db_get(f"empleados?nombre=ilike.*{datos['empleado_nombre'].split()[0]}*&select=rol&limit=1")
-        if target and target[0].get("rol")==1:
-            s.timer_end("nomina")
-            return "No tienes acceso a esa nomina \U0001f512"
+async def enviar_doc_whatsapp(telefono,drive_file_id,filename):
+    """Download PDF from Drive via n8n and send via WhatsApp Evolution sendMedia"""
     try:
+        async with httpx.AsyncClient(timeout=60) as c:
+            # Download from Drive via n8n webhook
+            dr=await c.post(f"{N8N}/webhook/download-drive-base64",json={"drive_file_id":drive_file_id,"filename":filename})
+            dd=dr.json()
+        if not dd.get("success") or not dd.get("base64"):
+            log.error(f"Drive download failed: {str(dd)[:200]}")
+            return False
+        # Send via Evolution sendMedia
+        body={"number":f"{telefono}@s.whatsapp.net","mediatype":"document","mimetype":"application/pdf","media":dd["base64"],"fileName":filename if filename.lower().endswith(".pdf") else f"{filename}.pdf","caption":f"\U0001f4c4 {filename}"}
+        async with httpx.AsyncClient(timeout=30) as c:
+            await c.post(f"{EVO}/message/sendMedia/{INSTANCE}",headers={"apikey":EK,"Content-Type":"application/json"},json=body)
+        return True
+    except Exception as e:
+        log.error(f"enviar_doc_whatsapp: {e}")
+        return False
+
+async def ag_nomina(s):
+    """Nómina: cálculo (admin/encargado) o envío PDF (empleados con DNI verification)"""
+    s.timer_start("nomina")
+    texto=s.mensaje_normalizado.lower()
+    rol=int(s.empleado.get("rol",99) or 99)
+    datos=parsear_nomina(s.mensaje_normalizado,s.empleado.get("nombre",""))
+    log.info(f"[{s.trace_id}] Nomina: {datos} rol={rol}")
+    
+    # Detect if asking for PDF document vs calculation
+    quiere_pdf=any(w in texto for w in ["manda","envia","envía","pdf","documento","descarga","dame"])
+    
+    # Check if asking for own or another's
+    mi_nombre=s.empleado.get("nombre","").lower().strip()
+    nombre_pedido=datos.get("empleado_nombre","").lower().strip()
+    def _norm(n):
+        p=n.split()
+        return (p[0],p[-1]) if len(p)>=2 else (p[0],"") if p else ("","")
+    es_propia=_norm(mi_nombre)==_norm(nombre_pedido) or (_norm(mi_nombre)[0]==_norm(nombre_pedido)[0])
+    
+    # ACCESS CONTROL
+    if rol==1:
+        pass  # Admin: full access
+    elif rol==2:
+        if not es_propia:
+            target=await db_get(f"empleados?nombre=ilike.*{datos['empleado_nombre'].split()[0]}*&select=rol&limit=1")
+            if target and int(target[0].get("rol",0) or 0)==1:
+                s.timer_end("nomina");return "No tienes acceso a esa nomina \U0001f512"
+    else:
+        # Operario: only own, needs DNI for PDF
+        if not es_propia:
+            s.timer_end("nomina");return "Solo puedes consultar tu propia nomina \U0001f512"
+        if quiere_pdf:
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"nomina_dni","dominio":"NOMINA","contexto":{"datos_nomina":datos,"quiere_pdf":True}})
+            s.timer_end("nomina");return "Para enviarte la nomina necesito verificar tu identidad. Dime tu DNI/NIE \U0001f4cb"
+    
+    if quiere_pdf:
+        # Send PDF directly (admin/encargado, or after DNI verification)
+        return await _buscar_y_enviar_nomina_pdf(s,datos,s.telefono)
+    else:
+        # Calculate nómina
+        return await _calcular_nomina(s,datos)
+
+async def _calcular_nomina(s,datos):
+    """Call Python fichajes backend to calculate nómina"""
+    try:
+        log.info(f"[{s.trace_id}] Calcular nomina: {datos}")
         async with httpx.AsyncClient(timeout=30) as c:
             r=await c.post(f"{PYTHON_URL}/calcular-nomina",json=datos)
             d=r.json()
         if d.get("success"):
-            s.timer_end("nomina")
-            return d.get("resumen","Nomina calculada pero sin resumen")
+            s.timer_end("nomina");return d.get("resumen","Nomina calculada pero sin resumen")
         else:
-            s.timer_end("nomina")
-            return d.get("mensaje",f"No pude calcular la nomina de {datos['empleado_nombre']} \U0001f527")
+            s.timer_end("nomina");return d.get("mensaje","") or f"No pude calcular la nomina \U0001f527"
     except Exception as e:
-        s.add_error(f"Nomina: {e}");s.timer_end("nomina")
+        log.error(f"Nomina calc: {e}");s.add_error(f"Nomina: {e}");s.timer_end("nomina")
         return f"Problema calculando la nomina \U0001f527"
+
+async def _buscar_y_enviar_nomina_pdf(s,datos,telefono_destino):
+    """Search documentos table and send PDF via WhatsApp"""
+    emp_nombre=datos.get("empleado_nombre","")
+    mes_num=datos.get("mes",0);anio=datos.get("anio",2026)
+    MESES_ABR={1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
+    mes_abr=MESES_ABR.get(mes_num,"")
+    anio_short=str(anio)[-2:]
+    # Find empleado_id for the target
+    emp=await db_get(f"empleados?nombre=ilike.*{emp_nombre.split()[0]}*&select=id&limit=1")
+    emp_id=emp[0]["id"] if emp else s.empleado.get("id",0)
+    # Query documentos
+    query=f"documentos?empleado_id=eq.{emp_id}&tipo_documento=eq.NOMINA"
+    if mes_abr:query+=f"&mes=eq.{mes_abr}"
+    if anio_short:query+=f"&anio=eq.{anio_short}"
+    query+="&order=created_at.desc&limit=1&select=drive_file_id,nombre_archivo,mes,anio"
+    docs=await db_get(query)
+    log.info(f"[{s.trace_id}] Doc query: {query} → {len(docs)} results")
+    if not docs:
+        s.timer_end("nomina");return f"No encontre la nomina de {mes_abr}-{anio_short} para {emp_nombre} \U0001f4cb"
+    doc=docs[0]
+    # Send PDF
+    ok=await enviar_doc_whatsapp(telefono_destino,doc["drive_file_id"],doc.get("nombre_archivo","nomina.pdf"))
+    s.timer_end("nomina")
+    if ok:return f"\u2705 Te he enviado la nomina de {doc.get('mes','')}-{doc.get('anio','')} \U0001f4c4"
+    else:return f"No pude enviar el documento \U0001f527 Contacta con administracion"
 
 # ══════════════ OTROS AGENTES ══════════════
 async def ag_saludo(s):
@@ -659,6 +725,28 @@ async def procesar(s):
             except:pass
             s.dominio="N8N";s.dominio_fuente="espera";s.respuesta="";s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
         # General espera
+        # Handle nomina_dni espera — employee verifying identity for nómina PDF
+        if esp.get("tipo")=="nomina_dni":
+            dni_input=s.mensaje_normalizado.strip().upper().replace(" ","").replace("-","")
+            emp_id=s.empleado.get("id",0)
+            emp_data=await db_get(f"empleados?id=eq.{emp_id}&select=dni,telefono,nombre")
+            if emp_data:
+                dni_db=(emp_data[0].get("dni","") or "").strip().upper().replace(" ","").replace("-","")
+                tel_db=(emp_data[0].get("telefono","") or "").strip()
+                if dni_db and dni_input==dni_db and s.telefono==tel_db:
+                    datos_nomina=ctx.get("datos_nomina",{"empleado_nombre":s.empleado.get("nombre",""),"mes":datetime.now().month,"anio":datetime.now().year})
+                    s.timer_start("nomina")
+                    s.respuesta=await _buscar_y_enviar_nomina_pdf(s,datos_nomina,s.telefono)
+                elif not dni_db:
+                    s.respuesta="No tienes DNI registrado en el sistema. Contacta con administracion \U0001f4cb"
+                else:
+                    s.respuesta="DNI incorrecto \U0001f512"
+            else:
+                s.respuesta="No encontre tus datos \U0001f527"
+            s.dominio="NOMINA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
+        
         # Handle confirmar_fichaje espera — user confirming LLM-parsed hours
         if esp.get("tipo")=="confirmar_fichaje":
             resp_low=s.mensaje_normalizado.lower().strip()
