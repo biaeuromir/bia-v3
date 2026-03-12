@@ -656,15 +656,14 @@ def detectar(txt,empleado_rol=0,tiene_espera_conf=False,txt_original=""):
             return "FICHAJE","confirmar",0.9
         # Not valid confirmation context — fall through to general
     if PS.match(t): return "SALUDO","responder",1.0
-    # ═══ ACCIONES ADMIN CON MAYÚSCULAS ═══
-    if "REABRIR" in txt_original and "OBRA" in txt_original:
-        return "REABRIR_OBRA","reabrir",1.0
-    if "CERRAR" in txt_original and "OBRA" in txt_original:
-        return "CERRAR_OBRA","cerrar",1.0
-    if "ALTA" in txt_original and "EMPLEADO" in txt_original:
-        return "ALTA_EMPLEADO","crear",1.0
-    if "BAJA" in txt_original and "EMPLEADO" in txt_original:
-        return "BAJA_EMPLEADO","baja",1.0
+    # ═══ COMANDOS EXACTOS EN MAYÚSCULAS (si una letra falla, no ejecuta) ═══
+    cmd = txt_original.strip()
+    if cmd == "REABRIR OBRA": return "REABRIR_OBRA","reabrir",1.0
+    if cmd == "CERRAR OBRA": return "CERRAR_OBRA","cerrar",1.0
+    if cmd == "ALTA OBRA": return "OBRA_ALTA","crear",1.0
+    if cmd == "ALTA EMPLEADO": return "ALTA_EMPLEADO","crear",1.0
+    if cmd == "BAJA EMPLEADO": return "BAJA_EMPLEADO","baja",1.0
+    # Normal obra detection (lowercase)
     if re.search(r'nueva obra|registra(r|me)?\s*obra|abrir obra|alta obra|dar de alta obra',t): return "OBRA_ALTA","crear",0.95
     if re.search(r'cerrar obra|baja obra|dar de baja',t): return "OBRA_BAJA","cerrar",0.9
     if re.search(r'n[oó]mina|sueldo|salario|cu[aá]nto (le )?debo|pagar a|calcul[ae]|env[ií]a(me)?\\s.*(n[oó]mina|documento)',t): return "NOMINA","calcular",0.95
@@ -1159,7 +1158,7 @@ async def procesar(s):
             await guardar_ejecucion(s);return s
         if esp.get("tipo")=="obra_madrid" and consume_espera:
             ctx["fuera_madrid"]="fuera" in s.mensaje_normalizado.lower()
-            encs=await db_get("empleados","select=id,nombre,rol&rol=in.(1,2)&estado=eq.Activo&order=nombre")
+            encs=await db_get("empleados","select=id,nombre,rol&rol_id=in.(1,2)&estado=eq.Activo&order=nombre")
             lista="\n".join([f"{i+1}. {e2['nombre']}" + (" (Admin)" if e2['rol']==1 else "") for i,e2 in enumerate(encs)])
             ctx["encargados"]=[e2["id"] for e2 in encs]
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_encargado","dominio":"OBRA_ALTA","contexto":ctx})
@@ -1167,7 +1166,7 @@ async def procesar(s):
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
         if esp.get("tipo")=="obra_encargado" and consume_espera:
-            encs=await db_get("empleados","select=id,nombre,rol&rol=in.(1,2)&estado=eq.Activo&order=nombre")
+            encs=await db_get("empleados","select=id,nombre,rol&rol_id=in.(1,2)&estado=eq.Activo&order=nombre")
             try:
                 sel=int(s.mensaje_normalizado.strip())-1;enc=encs[sel] if 0<=sel<len(encs) else encs[0]
             except:enc=next((e2 for e2 in encs if s.mensaje_normalizado.lower() in e2["nombre"].lower()),encs[0])
