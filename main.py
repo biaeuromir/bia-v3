@@ -262,21 +262,29 @@ async def ag_fichaje(s):
     emp_id=s.empleado.get("id",0)
     hoy=date.today().isoformat()
     
-    # Continuation from espera (obra selection) — forward directly to backend without re-parsing
+    # Continuation from espera (obra selection) — rebuild backend state + send selection
     if s.accion=="continuar" and s.dominio_fuente=="espera":
         try:
-            body={"mensaje":texto,"empleado_id":emp_id,"empleado_nombre":s.empleado.get("nombre",""),
-                  "empleado_telefono":s.empleado.get("telefono",""),"coste_hora":s.empleado.get("coste_hora",0),"fuera_madrid_hora":15}
+            base_body={"empleado_id":emp_id,"empleado_nombre":s.empleado.get("nombre",""),
+                       "empleado_telefono":s.empleado.get("telefono",""),"coste_hora":s.empleado.get("coste_hora",0),"fuera_madrid_hora":15}
+            # Get original message from espera context to rebuild backend state
+            esp_ctx=s.metadata.get("espera_contexto",{})
+            msg_orig=esp_ctx.get("mensaje_original","")
             async with httpx.AsyncClient(timeout=30) as c:
-                r=await c.post(f"{PYTHON_URL}/procesar-fichaje",json=body)
+                if msg_orig:
+                    # Step 1: Resend original fichaje to rebuild backend state
+                    log.info(f"[{s.trace_id}] Rebuilding backend state: {msg_orig[:50]}")
+                    await c.post(f"{PYTHON_URL}/procesar-fichaje",json={**base_body,"mensaje":msg_orig})
+                # Step 2: Send the obra selection
+                r=await c.post(f"{PYTHON_URL}/procesar-fichaje",json={**base_body,"mensaje":texto})
                 d=r.json()
             msg=d.get("mensaje",d.get("message",str(d)))
             if d.get("error") or "error" in str(d).lower()[:50]:
                 await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
             if "obra" in msg.lower() and "1." in msg:
-                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"ok":True}})
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"ok":True,"mensaje_original":texto}})
             elif "?" in msg:
-                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"continuation":True}})
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"continuation":True,"mensaje_original":texto}})
             s.timer_end("fichaje"); return msg
         except Exception as e:
             s.add_error(f"Fichaje espera: {e}"); s.timer_end("fichaje")
@@ -397,11 +405,11 @@ async def ag_fichaje(s):
                 await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
         
         if "obra" in msg.lower() and "1." in msg:
-            log.info(f"[{s.trace_id}] Saving espera seleccion_obra")
-            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"ok":True}})
+            log.info(f"[{s.trace_id}] Saving espera seleccion_obra with original msg")
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"ok":True,"mensaje_original":texto}})
         elif "?" in msg:
             log.info(f"[{s.trace_id}] Backend asked question, saving espera continuation")
-            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"continuation":True}})
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"continuation":True,"mensaje_original":texto}})
         
         # ═══ STEP 5: Log detallado ═══
         await log_fichaje(s.trace_id,emp_id,s.telefono,s.mensaje_original,texto,patron,metodo,
@@ -548,7 +556,7 @@ async def procesar(s):
             except:pass
             s.dominio="N8N";s.dominio_fuente="espera";s.respuesta="";s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
         # General espera
-        s.dominio=esp.get("dominio","FICHAJE");s.dominio_fuente="espera";s.confianza=1.0;s.accion="continuar"
+        s.dominio=esp.get("dominio","FICHAJE");s.dominio_fuente="espera";s.confianza=1.0;s.accion="continuar";s.metadata["espera_contexto"]=ctx
         s.timer_start("agente")
         try:s.respuesta=await AG.get(s.dominio,ag_general)(s)
         except Exception as e:s.add_error(f"Espera: {e}");s.respuesta="Problema tecnico \U0001f527"
