@@ -468,7 +468,7 @@ def parsear_nomina(texto,empleado_nombre=""):
     if m2: nombre=m2.group(1).strip()
     if not nombre or nombre.lower() in ("mi","me","yo","este mes","enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"):
         nombre=empleado_nombre
-    return {"nombre":nombre,"mes":mes,"anio":anio}
+    return {"empleado_nombre":nombre,"mes":mes,"anio":anio}
 
 async def ag_nomina(s):
     """Calculate payroll via Python fichajes backend"""
@@ -484,7 +484,7 @@ async def ag_nomina(s):
             return d.get("resumen","Nomina calculada pero sin resumen")
         else:
             s.timer_end("nomina")
-            return d.get("mensaje",f"No pude calcular la nomina de {datos['nombre']} \U0001f527")
+            return d.get("mensaje",f"No pude calcular la nomina de {datos['empleado_nombre']} \U0001f527")
     except Exception as e:
         s.add_error(f"Nomina: {e}");s.timer_end("nomina")
         return f"Problema calculando la nomina \U0001f527"
