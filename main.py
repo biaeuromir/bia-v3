@@ -301,10 +301,11 @@ async def ag_fichaje(s):
             msg=d.get("mensaje",d.get("message",str(d)))
             if d.get("error") or "error" in str(d).lower()[:50]:
                 await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
+            orig_msg=esp_ctx.get("mensaje_original",texto)
             if "obra" in msg.lower() and "1." in msg:
-                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"ok":True,"mensaje_original":msg_para_backend}})
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"ok":True,"mensaje_original":orig_msg}})
             elif "?" in msg:
-                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"continuation":True,"mensaje_original":msg_para_backend}})
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"continuation":True,"mensaje_original":orig_msg}})
             s.timer_end("fichaje"); return msg
         except Exception as e:
             s.add_error(f"Fichaje espera: {e}"); s.timer_end("fichaje")
@@ -350,6 +351,13 @@ async def ag_fichaje(s):
         s.timer_end("fichaje")
         return f"{solo_h} horas, vale! Pero necesito entrada y salida. Ej: 9-17 \U0001f550"
     
+    elif pf.get("det") and pf.get("needs_llm") and pf.get("anti_pattern"):
+        # Anti-pattern detected (multi-person, multi-day, etc.) — ask for clarification, don't LLM
+        await log_fichaje(s.trace_id,emp_id,s.telefono,s.mensaje_original,texto,"anti","regex",
+                         horas_raw,None,None,False,False,True,None,None,"","aclaracion","ANTI_PATTERN",int((time.time()-t0)*1000))
+        s.timer_end("fichaje")
+        return "No estoy segura de ese mensaje. Dime solo TUS horas de hoy, ej: 9-17 \U0001f550"
+    
     elif pf.get("det") and pf.get("needs_llm"):
         # ═══ STEP 1B: Mini LLM fallback ═══
         metodo="llm"
@@ -368,6 +376,8 @@ async def ag_fichaje(s):
             ent_llm=llm_r.get("entrada","?");sal_llm=llm_r.get("salida","?")
             await log_fichaje(s.trace_id,emp_id,s.telefono,s.mensaje_original,texto,patron,metodo,
                              horas_raw,ent_llm,sal_llm,False,False,True,None,conf_llm,"","aclaracion","MEDIUM_CONFIDENCE",llm_r.get("parseo_ms",0))
+            # Save espera so "si" gets routed back to fichaje confirmation
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"confirmar_fichaje","dominio":"FICHAJE","contexto":{"entrada":ent_llm,"salida":sal_llm,"mensaje_original":texto}})
             s.timer_end("fichaje")
             return f"Creo que has dicho {ent_llm} a {sal_llm}, es correcto? Responde si o repite las horas \U0001f550"
         
@@ -477,7 +487,10 @@ async def ag_nomina(s):
     rol=s.empleado.get("rol",99)
     mi_nombre=s.empleado.get("nombre","").lower()
     nombre_pedido=datos.get("empleado_nombre","").lower()
-    es_propia=nombre_pedido in mi_nombre or mi_nombre in nombre_pedido or nombre_pedido==mi_nombre
+    # Normalize names: strip, lowercase, compare first+last words to avoid Ana/Anabel false positives
+    def _norm_name(n): parts=n.lower().strip().split(); return (parts[0],parts[-1]) if len(parts)>=2 else (parts[0],"") if parts else ("","")
+    mi_norm=_norm_name(mi_nombre);ped_norm=_norm_name(nombre_pedido)
+    es_propia=mi_norm==ped_norm or (mi_norm[0]==ped_norm[0] and (not ped_norm[1] or mi_norm[1]==ped_norm[1]))
     log.info(f"[{s.trace_id}] Nomina: {datos} rol={rol} propia={es_propia}")
     # Access control
     if rol>=3 and not es_propia:
@@ -588,23 +601,30 @@ async def procesar(s):
                 await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":ctx})
                 s.respuesta="No entendi. Dime el numero de la obra."
             s.dominio="FACTURA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
         # Obra alta steps
         if esp.get("tipo")=="obra_nombre":
             ctx["nombre"]=s.mensaje_normalizado
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_direccion","dominio":"OBRA_ALTA","contexto":ctx})
-            s.respuesta="Direccion de la obra?";s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
+            s.respuesta="Direccion de la obra?";s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
         if esp.get("tipo")=="obra_direccion":
             ctx["direccion"]=s.mensaje_normalizado
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_madrid","dominio":"OBRA_ALTA","contexto":ctx})
-            s.respuesta="Dentro o fuera de Madrid?";s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
+            s.respuesta="Dentro o fuera de Madrid?";s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
         if esp.get("tipo")=="obra_madrid":
             ctx["fuera_madrid"]="fuera" in s.mensaje_normalizado.lower()
             encs=await db_get("empleados","select=id,nombre,rol&rol=in.(1,2)&estado=eq.activo&order=nombre")
             lista="\n".join([f"{i+1}. {e2['nombre']}" + (" (Admin)" if e2['rol']==1 else "") for i,e2 in enumerate(encs)])
             ctx["encargados"]=[e2["id"] for e2 in encs]
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_encargado","dominio":"OBRA_ALTA","contexto":ctx})
-            s.respuesta=f"Quien es el encargado?\n\n{lista}\n\nDime numero o nombre";s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
+            s.respuesta=f"Quien es el encargado?\n\n{lista}\n\nDime numero o nombre";s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
         if esp.get("tipo")=="obra_encargado":
             encs=await db_get("empleados","select=id,nombre,rol&rol=in.(1,2)&estado=eq.activo&order=nombre")
             try:
@@ -616,7 +636,9 @@ async def procesar(s):
                 nombre_o=ctx.get("nombre","");dir_o=ctx.get("direccion","");fm="Fuera de Madrid" if ctx.get("fuera_madrid") else "Madrid"
                 s.respuesta=f"\u2705 Obra creada!\n\n\U0001f3d7 {nombre_o}\n\U0001f4cd {dir_o}\n\U0001f30d {fm}\n\U0001f477 Encargado: {enc['nombre']}\n\n\U0001f4c1 Carpeta Drive + Sheet creados"
             except Exception as e:log.error(f"WF-15: {e}");s.respuesta="Error creando la obra."
-            s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
+            s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
         if esp.get("tipo")=="obra_baja":
             obras=await db_get("obras","select=id,nombre,spreadsheet_id&estado=eq.En curso&order=nombre")
             try:
@@ -626,7 +648,9 @@ async def procesar(s):
                 async with httpx.AsyncClient(timeout=15) as pc:await pc.patch(f"{SUPA}/rest/v1/obras?id=eq.{obra['id']}",headers={"apikey":SK,"Authorization":f"Bearer {SK}","Content-Type":"application/json","Prefer":"return=representation"},json={"estado":"Cerrada"})
                 s.respuesta=f"\u2705 Obra *{obra['nombre']}* cerrada."
             else:s.respuesta="No encontre esa obra."
-            s.dominio="OBRA_BAJA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
+            s.dominio="OBRA_BAJA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
         if esp.get("tipo")=="n8n_pending":
             try:
                 fwd={"data":{"key":{"remoteJid":f"{s.telefono}@s.whatsapp.net","fromMe":False},"message":{"conversation":s.mensaje_original}}}
@@ -635,6 +659,24 @@ async def procesar(s):
             except:pass
             s.dominio="N8N";s.dominio_fuente="espera";s.respuesta="";s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
         # General espera
+        # Handle confirmar_fichaje espera — user confirming LLM-parsed hours
+        if esp.get("tipo")=="confirmar_fichaje":
+            resp_low=s.mensaje_normalizado.lower().strip()
+            if resp_low in("si","sí","ok","vale","correcto","yes"):
+                # User confirmed — rebuild message from saved hours and process as fichaje
+                ent_conf=ctx.get("entrada","");sal_conf=ctx.get("salida","")
+                if ent_conf and sal_conf:
+                    s.mensaje_normalizado=f"de {ent_conf} a {sal_conf}";s.mensaje_original=s.mensaje_normalizado
+                    s.dominio="FICHAJE";s.dominio_fuente="espera";s.confianza=1.0;s.accion="procesar"
+                    s.timer_start("agente")
+                    try:s.respuesta=await AG.get("FICHAJE",ag_general)(s)
+                    except Exception as e:s.add_error(f"Confirm: {e}");s.respuesta="Problema con el fichaje \U0001f527"
+                    s.timer_end("agente");s.duracion_ms=int((time.time()-t0)*1000)
+                    if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+                    await guardar_ejecucion(s);return s
+            else:
+                # User wants to repeat hours — let it flow through normal detection
+                pass
         s.dominio=esp.get("dominio","FICHAJE");s.dominio_fuente="espera";s.confianza=1.0;s.accion="continuar";s.metadata["espera_contexto"]=ctx
         s.timer_start("agente")
         try:s.respuesta=await AG.get(s.dominio,ag_general)(s)
@@ -761,7 +803,6 @@ async def webhook(req:Request):
                         s=BiaState(telefono=tel,mensaje_original=transcription,tipo_mensaje="audio",empleado=emp);s=await procesar(s)
                         if s.respuesta:
                             await wa(f"{tel}@s.whatsapp.net",s.respuesta)
-                            await guardar_msg(tel,s.empleado.get("id",0),"assistant",s.respuesta)
                         return{"ok":True,"trace_id":s.trace_id}
                     else:await wa(f"{tel}@s.whatsapp.net","No pude entender el audio \U0001f3a4")
                 else:await wa(f"{tel}@s.whatsapp.net","No pude descargar el audio \U0001f527")
@@ -784,7 +825,6 @@ async def webhook(req:Request):
         s=BiaState(telefono=tel,mensaje_original=cont,tipo_mensaje="texto",empleado=emp);s=await procesar(s)
         if s.respuesta:
             await wa(f"{tel}@s.whatsapp.net",s.respuesta)
-            await guardar_msg(tel,s.empleado.get("id",0),"assistant",s.respuesta)
         return{"ok":True,"trace_id":s.trace_id}
     except Exception as e:log.error(f"Webhook: {e}");return{"ok":False}
 
