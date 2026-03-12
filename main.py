@@ -563,15 +563,20 @@ async def _buscar_y_enviar_nomina_pdf(s,datos,telefono_destino):
     MESES_ABR={1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
     mes_abr=MESES_ABR.get(mes_num,"")
     anio_short=str(anio)[-2:]
-    # Find empleado_id for the target
-    emp=await db_get(f"empleados?nombre=ilike.*{emp_nombre.split()[0]}*&select=id&limit=1")
-    emp_id=emp[0]["id"] if emp else s.empleado.get("id",0)
+    # Find empleado_id — use own ID if asking for own nómina, otherwise search
+    mi_n2=s.empleado.get("nombre","").lower().strip()
+    ped_n2=emp_nombre.lower().strip()
+    if ped_n2 in mi_n2 or mi_n2 in ped_n2 or ped_n2.split()[0] in mi_n2:
+        emp_id=s.empleado.get("id",0)
+    else:
+        emp=await db_get("empleados",f"nombre=ilike.*{emp_nombre.split()[0]}*&select=id&limit=5")
+        emp_id=emp[0]["id"] if emp else 0
     # Query documentos
-    query=f"documentos?empleado_id=eq.{emp_id}&tipo_documento=eq.NOMINA"
-    if mes_abr:query+=f"&mes=eq.{mes_abr}"
-    if anio_short:query+=f"&anio=eq.{anio_short}"
-    query+="&order=created_at.desc&limit=1&select=drive_file_id,nombre_archivo,mes,anio"
-    docs=await db_get(query)
+    q=f"empleado_id=eq.{emp_id}&tipo_documento=eq.NOMINA"
+    if mes_abr:q+=f"&mes=eq.{mes_abr}"
+    if anio_short:q+=f"&anio=eq.{anio_short}"
+    q+="&order=created_at.desc&limit=1&select=drive_file_id,nombre_archivo,mes,anio"
+    docs=await db_get("documentos",q)
     log.info(f"[{s.trace_id}] Doc query: {query} → {len(docs)} results")
     if not docs:
         s.timer_end("nomina");return f"No encontre la nomina de {mes_abr}-{anio_short} para {emp_nombre} \U0001f4cb"
