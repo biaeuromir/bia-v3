@@ -1158,7 +1158,7 @@ async def procesar(s):
             await guardar_ejecucion(s);return s
         if esp.get("tipo")=="obra_madrid" and consume_espera:
             ctx["fuera_madrid"]="fuera" in s.mensaje_normalizado.lower()
-            encs=await db_get("empleados","select=id,nombre,rol&rol_id=in.(1,2)&estado=eq.Activo&order=nombre")
+            encs=await db_get("empleados","select=id,nombre,rol_id&rol_id=in.(1,2)&estado=eq.Activo&order=nombre")
             lista="\n".join([f"{i+1}. {e2['nombre']}" + (" (Admin)" if e2['rol']==1 else "") for i,e2 in enumerate(encs)])
             ctx["encargados"]=[e2["id"] for e2 in encs]
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_encargado","dominio":"OBRA_ALTA","contexto":ctx})
@@ -1166,7 +1166,7 @@ async def procesar(s):
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
         if esp.get("tipo")=="obra_encargado" and consume_espera:
-            encs=await db_get("empleados","select=id,nombre,rol&rol_id=in.(1,2)&estado=eq.Activo&order=nombre")
+            encs=await db_get("empleados","select=id,nombre,rol_id&rol_id=in.(1,2)&estado=eq.Activo&order=nombre")
             try:
                 sel=int(s.mensaje_normalizado.strip())-1;enc=encs[sel] if 0<=sel<len(encs) else encs[0]
             except:enc=next((e2 for e2 in encs if s.mensaje_normalizado.lower() in e2["nombre"].lower()),encs[0])
