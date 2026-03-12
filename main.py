@@ -289,6 +289,7 @@ INTENTS = [
     {"id":"anticipos_pendientes","kw":["anticipos hay pendientes","anticipos pendientes empresa"],"kw_ro":["avansuri în așteptare","avansuri pendinte"],"tipo":"query","scope":"team","roles":[1,2]},
     {"id":"dinero_anticipado","kw":["cuánto dinero se ha adelantado","total anticipos empresa"],"kw_ro":["cât s-a dat avans total","total avansuri"],"tipo":"query_calc","scope":"team","roles":[1,2]},
     {"id":"coste_obra","kw":["cuánto gastado en obra","coste obra","gasto total obra","cuanto nos hemos gastado","gastado en la obra","gasto en la obra","que gasto tenemos","gastos de la obra","gasto obra","cuanto llevamos gastado","que llevamos gastado"],"kw_ro":["cât s-a cheltuit pe lucrare","cost lucrare"],"tipo":"query_calc","scope":"team","roles":[1,2]},
+    {"id":"gastos_empleado","kw":["cuanto dinero ha gastado","cuanto gasto","facturas de","gastos de","cuanto a gastado","dinero gastado"],"kw_ro":["cat a cheltuit","cheltuieli de"],"tipo":"query","scope":"team","roles":[1,2]},
     # ═══ ADMIN SCOPE ═══
     {"id":"obras_activas","kw":["obras están activas","cuántas obras","obras abiertas"],"kw_ro":["lucrări active","câte lucrări sunt active"],"tipo":"query","scope":"admin","roles":[1,2]},
     {"id":"obra_mas_gasto","kw":["obra tiene más gasto","obra con más gasto"],"kw_ro":["care lucrare are cele mai multe cheltuieli"],"tipo":"query_calc","scope":"admin","roles":[1,2]},
@@ -566,6 +567,39 @@ async def ejecutar_intent(s, intent):
         top = sorted(por_obra.items(), key=lambda x: -x[1])[:5]
         det = "\n".join([f"  \U0001f3d7\ufe0f *{o}*: {round(v,2)}\u20ac" for o, v in top])
         return f"\U0001f4ca *Gastos del mes: {total}\u20ac*\n\nPor obra:\n{det}"
+    
+    if iid == "gastos_empleado":
+        # Extract employee name + date from message
+        texto_lower = s.mensaje_normalizado.lower()
+        # Find employee name - search all active employees
+        emps = await db_get("empleados", "estado=eq.activo&select=id,nombre&order=nombre")
+        target_emp = None
+        for emp_item in emps:
+            emp_name = emp_item.get("nombre", "").lower()
+            # Match first name or last name
+            for part in emp_name.split():
+                if len(part) > 2 and part in texto_lower:
+                    target_emp = emp_item
+                    break
+            if target_emp:
+                break
+        if not target_emp:
+            return "No identifique al empleado. Dime el nombre exacto \U0001f914"
+        # Determine date (hoy, ayer, or exact date like 25/06/2026, 10-03-2026)
+        fecha = extraer_fecha(texto_lower)
+        # Query gastos for that employee on that date
+        gastos_rows = await db_get("gastos", f"empleado_id=eq.{target_emp['id']}&fecha_factura=eq.{fecha}&select=proveedor,total,obra,concepto,numero_factura&order=created_at.desc")
+        if not gastos_rows:
+            # Try by empleado_nombre if empleado_id didn't work
+            nombre_search = target_emp["nombre"].split()[0]
+            gastos_rows = await db_get("gastos", f"empleado_nombre=ilike.*{nombre_search}*&fecha_factura=eq.{fecha}&select=proveedor,total,obra,concepto,numero_factura&order=created_at.desc")
+        if not gastos_rows:
+            fecha_txt = "hoy" if fecha == _hoy() else ("ayer" if fecha == _ayer() else fecha)
+            return f"*{target_emp['nombre']}* no tiene facturas registradas {fecha_txt}"
+        total = round(sum(float(r.get("total", 0) or 0) for r in gastos_rows), 2)
+        fecha_txt = "hoy" if fecha == _hoy() else ("ayer" if fecha == _ayer() else fecha)
+        det = "\n".join([f"  \U0001f9fe *{r.get('proveedor','?')}* — {r.get('total',0)}\u20ac\n     Obra: {r.get('obra','?')}" for r in gastos_rows])
+        return f"\U0001f4b8 *Gastos de {target_emp['nombre']} {fecha_txt}:*\n\n{det}\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\U0001f4b0 *TOTAL: {total}\u20ac* ({len(gastos_rows)} facturas)"
     
     if iid == "coste_obra":
         obras = await db_get("obras", "estado=eq.En curso&select=id,nombre&order=nombre")
