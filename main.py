@@ -408,7 +408,9 @@ async def ag_fichaje(s):
         return "Ya tenia registrado ese fichaje \U0001f44d"
     
     # ═══ STEP 4: Register via Python fichajes backend ═══
-    body={"mensaje":texto,"empleado_id":emp_id,"empleado_nombre":s.empleado.get("nombre",""),
+    # Send NORMALIZED hours to backend (prevents backend re-parsing "8 a 6" as -2h)
+    msg_para_backend=f"de {entrada} a {salida}" if entrada and salida else texto
+    body={"mensaje":msg_para_backend,"empleado_id":emp_id,"empleado_nombre":s.empleado.get("nombre",""),
           "empleado_telefono":s.empleado.get("telefono",""),"coste_hora":s.empleado.get("coste_hora",0),
           "fuera_madrid_hora":15}
     try:
