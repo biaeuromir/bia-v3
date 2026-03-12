@@ -260,16 +260,17 @@ def detectar(txt,empleado_rol=0,tiene_espera_conf=False):
     if PS.match(t): return "SALUDO","responder",1.0
     if re.search(r'nueva obra|registra(r|me)?\s*obra|abrir obra|alta obra|dar de alta obra',t): return "OBRA_ALTA","crear",0.95
     if re.search(r'cerrar obra|baja obra|dar de baja',t): return "OBRA_BAJA","cerrar",0.9
+    if re.search(r'n[oó]mina|sueldo|salario|cu[aá]nto (le )?debo|pagar a|calcul[ae]',t): return "NOMINA","calcular",0.95
     return "AMBIGUO","clasificar",0.0
 
 # ══════════════ CLASIFICADOR GPT ══════════════
 async def clasificar(txt):
-    p=f'Clasifica en UN dominio y da confianza. Dominios: FICHAJE,OBRAS,FINANZAS,EMPLEADOS,DOCUMENTOS,INVENTARIO,GENERAL. JSON: {{"dominio":"OBRAS","confianza":0.85}}. Mensaje: "{txt[:500]}"'
+    p=f'Clasifica en UN dominio y da confianza. Dominios: FICHAJE,OBRAS,FINANZAS,EMPLEADOS,NOMINA,DOCUMENTOS,INVENTARIO,GENERAL. JSON: {{"dominio":"OBRAS","confianza":0.85}}. Mensaje: "{txt[:500]}"'
     raw=await gpt(p)
     try:
         if "```" in raw: raw=raw.split("```")[1].replace("json","").strip()
         d=json.loads(raw.strip());dom=d.get("dominio","GENERAL").upper();conf=float(d.get("confianza",0.5))
-        return (dom if dom in ["FICHAJE","OBRAS","FINANZAS","EMPLEADOS","DOCUMENTOS","INVENTARIO","GENERAL"] else "GENERAL"),conf
+        return (dom if dom in ["FICHAJE","OBRAS","FINANZAS","EMPLEADOS","NOMINA","DOCUMENTOS","INVENTARIO","GENERAL"] else "GENERAL"),conf
     except: return "GENERAL",0.3
 
 # ══════════════ AGENTE FICHAJE BLINDADO ══════════════
@@ -445,6 +446,49 @@ async def ag_fichaje(s):
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
         return "Problema registrando el fichaje \U0001f527 Repite tus horas (ej: 9-17)"
 
+
+# ══════════════ AGENTE NÓMINA ══════════════
+MESES={"enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,"julio":7,"agosto":8,"septiembre":9,"octubre":10,"noviembre":11,"diciembre":12}
+
+def parsear_nomina(texto,empleado_nombre=""):
+    """Parse employee name, month and year from nomina request"""
+    t=texto.lower()
+    mes=None
+    for nombre_mes,num in MESES.items():
+        if nombre_mes in t: mes=num;break
+    if not mes:
+        m2=re.search(r'mes\s*(\d{1,2})',t)
+        if m2: mes=int(m2.group(1))
+    if not mes: mes=datetime.now().month if datetime.now().day>10 else (datetime.now().month-1 or 12)
+    m2=re.search(r'20(\d{2})',t)
+    anio=int(f"20{m2.group(1)}") if m2 else datetime.now().year
+    if mes>datetime.now().month and anio==datetime.now().year: anio-=1
+    nombre=None
+    m2=re.search(r'(?:n[oó]mina|sueldo|debo|pagar)\s+(?:de|a|al)\s+([A-ZÁÉÍÓÚa-záéíóú]+(?:\s+[A-ZÁÉÍÓÚa-záéíóú]+)*)',texto)
+    if m2: nombre=m2.group(1).strip()
+    if not nombre or nombre.lower() in ("mi","me","yo","este mes","enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"):
+        nombre=empleado_nombre
+    return {"nombre":nombre,"mes":mes,"anio":anio}
+
+async def ag_nomina(s):
+    """Calculate payroll via Python fichajes backend"""
+    s.timer_start("nomina")
+    datos=parsear_nomina(s.mensaje_normalizado,s.empleado.get("nombre",""))
+    log.info(f"[{s.trace_id}] Nomina: {datos}")
+    try:
+        async with httpx.AsyncClient(timeout=30) as c:
+            r=await c.post(f"{PYTHON_URL}/calcular-nomina",json=datos)
+            d=r.json()
+        if d.get("success"):
+            s.timer_end("nomina")
+            return d.get("resumen","Nomina calculada pero sin resumen")
+        else:
+            s.timer_end("nomina")
+            return d.get("mensaje",f"No pude calcular la nomina de {datos['nombre']} \U0001f527")
+    except Exception as e:
+        s.add_error(f"Nomina: {e}");s.timer_end("nomina")
+        return f"Problema calculando la nomina \U0001f527"
+
 # ══════════════ OTROS AGENTES ══════════════
 async def ag_saludo(s):
     n=s.empleado.get("apodo") or s.empleado.get("nombre","compañero")
@@ -484,7 +528,7 @@ async def ag_obra_baja(s):
     await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_baja","dominio":"OBRA_BAJA","contexto":{"obras_ids":[o["id"] for o in obras]}})
     return f"Que obra quieres cerrar?\n\n{lista}\n\nDime numero o nombre"
 
-AG={"FICHAJE":ag_fichaje,"OBRA_ALTA":ag_obra_alta,"OBRA_BAJA":ag_obra_baja,"SALUDO":ag_saludo,"OBRAS":ag_obras,"FINANZAS":ag_finanzas,"EMPLEADOS":ag_empleados,"DOCUMENTOS":ag_general,"INVENTARIO":ag_general,"GENERAL":ag_general}
+AG={"FICHAJE":ag_fichaje,"OBRA_ALTA":ag_obra_alta,"OBRA_BAJA":ag_obra_baja,"SALUDO":ag_saludo,"OBRAS":ag_obras,"FINANZAS":ag_finanzas,"EMPLEADOS":ag_empleados,"NOMINA":ag_nomina,"DOCUMENTOS":ag_general,"INVENTARIO":ag_general,"GENERAL":ag_general}
 
 # ══════════════ ROUTER PRINCIPAL ══════════════
 async def procesar(s):
