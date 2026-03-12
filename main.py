@@ -646,7 +646,7 @@ async def ejecutar_intent(s, intent):
 PS=re.compile(r'^(hola|buenos d[ií]as|buenas( tardes| noches)?|qu[eé] tal|hey)[\s!.?]*$',re.I)
 PC=re.compile(r'\b(confirmo|todos ok|confirmado|ok equipo|vale[,.]?\s*confirmado)\b',re.I)
 
-def detectar(txt,empleado_rol=0,tiene_espera_conf=False):
+def detectar(txt,empleado_rol=0,tiene_espera_conf=False,txt_original=""):
     t=txt.lower().strip()
     pf=parse_fichaje(t)
     if pf.get("det"): return "FICHAJE","procesar",1.0
@@ -657,14 +657,13 @@ def detectar(txt,empleado_rol=0,tiene_espera_conf=False):
         # Not valid confirmation context — fall through to general
     if PS.match(t): return "SALUDO","responder",1.0
     # ═══ ACCIONES ADMIN CON MAYÚSCULAS ═══
-    txt_raw = txt if 'txt' in dir() else t
-    if "REABRIR" in s.mensaje_original and "OBRA" in s.mensaje_original.upper():
+    if "REABRIR" in txt_original and "OBRA" in txt_original:
         return "REABRIR_OBRA","reabrir",1.0
-    if "CERRAR" in s.mensaje_original and "OBRA" in s.mensaje_original.upper():
+    if "CERRAR" in txt_original and "OBRA" in txt_original:
         return "CERRAR_OBRA","cerrar",1.0
-    if ("ALTA" in s.mensaje_original and "EMPLEADO" in s.mensaje_original.upper()):
+    if "ALTA" in txt_original and "EMPLEADO" in txt_original:
         return "ALTA_EMPLEADO","crear",1.0
-    if ("BAJA" in s.mensaje_original and "EMPLEADO" in s.mensaje_original.upper()):
+    if "BAJA" in txt_original and "EMPLEADO" in txt_original:
         return "BAJA_EMPLEADO","baja",1.0
     if re.search(r'nueva obra|registra(r|me)?\s*obra|abrir obra|alta obra|dar de alta obra',t): return "OBRA_ALTA","crear",0.95
     if re.search(r'cerrar obra|baja obra|dar de baja',t): return "OBRA_BAJA","cerrar",0.9
