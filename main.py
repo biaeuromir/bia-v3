@@ -95,6 +95,7 @@ FP=[
     {"n":"hr","r":re.compile(r'(\d{1,2})\s*horas?\b',re.I)},
 ]
 FK=re.compile(r'trabaj|ficha|jornada|turno|empiezo|salgo|entrad|salid|curr|hice|estuve|lucrat',re.I)
+FQ=re.compile(r'cuantos|cuántos|quién|quien|empleados.+fich|han fichado|ficharon.+hoy|resumen|informe',re.I)
 FK2=re.compile(r'\d+\s+y\s+(media|cuarto|pico)|ma[nñ]ana\s+\d+\s.+hasta|\d+\s.+hasta\s+las',re.I)
 # Anti-patterns: messages that look like fichaje but aren't
 FA=re.compile(r'(?:(?:ayer|anteayer|antes).+(?:hoy|ahora)|(?:hoy|ahora).+(?:ma[nñ]ana|luego|despu[eé]s)|(?:pedro|juan|carlos|miguel|otro|alguien|[eé]l|ella)\s.+\d{1,2}|no\s+s[eé]|\d{1,2}\s+\d{1,2}\s+\d{1,2}|trabajamos|hicimos|estuvimos|hicieron|y\s+(?:luego|despu[eé]s|m[aá]s\s+tarde)\s+\d)',re.I)
@@ -155,7 +156,7 @@ def parse_fichaje(texto):
             if not eh2: continue
             result=normalizar_turno(f"{sh2}:{sm2}",f"{eh2}:{em2}")
             return {**result,"det":True,"pat":p["n"]}
-    if FK.search(t) or FK2.search(t): return {"det":True,"pat":"kw","needs_llm":True}
+    if (FK.search(t) or FK2.search(t)) and not FQ.search(t): return {"det":True,"pat":"kw","needs_llm":True}
     return {"det":False}
 
 def normalizar_horas(texto):
@@ -288,8 +289,12 @@ INTENTS = [
     {"id":"facturas_obra","kw":["facturas hay en","facturas de la obra"],"kw_ro":["facturi la lucrare","ce facturi sunt"],"tipo":"query","scope":"team","roles":[1,2]},
     {"id":"anticipos_pendientes","kw":["anticipos hay pendientes","anticipos pendientes empresa"],"kw_ro":["avansuri în așteptare","avansuri pendinte"],"tipo":"query","scope":"team","roles":[1,2]},
     {"id":"dinero_anticipado","kw":["cuánto dinero se ha adelantado","total anticipos empresa"],"kw_ro":["cât s-a dat avans total","total avansuri"],"tipo":"query_calc","scope":"team","roles":[1,2]},
-    {"id":"coste_obra","kw":["cuánto gastado en obra","coste obra","gasto total obra","cuanto nos hemos gastado","gastado en la obra","gasto en la obra","que gasto tenemos","gastos de la obra","gasto obra","cuanto llevamos gastado","que llevamos gastado"],"kw_ro":["cât s-a cheltuit pe lucrare","cost lucrare"],"tipo":"query_calc","scope":"team","roles":[1,2]},
+    # ═══ TEAM SCOPE — NEW INTENTS ═══
+    {"id":"coste_obra","kw":["cuánto gastado en obra","coste obra","gasto total obra","cuanto nos hemos gastado","gastado en la obra","gasto en la obra","que gasto tenemos","gastos de la obra","gasto obra","cuanto llevamos gastado"],"kw_ro":["cât s-a cheltuit pe lucrare","cost lucrare"],"tipo":"query_calc","scope":"team","roles":[1,2]},
     {"id":"gastos_empleado","kw":["cuanto dinero ha gastado","cuanto gasto","facturas de","gastos de","cuanto a gastado","dinero gastado"],"kw_ro":["cat a cheltuit","cheltuieli de"],"tipo":"query","scope":"team","roles":[1,2]},
+    {"id":"horas_obra","kw":["horas se ha trabajado en","horas en la obra","horas obra","cuantas horas en obra","horas trabajadas en"],"kw_ro":["ore lucrate pe lucrare","cate ore pe lucrare"],"tipo":"query_calc","scope":"team","roles":[1,2]},
+    {"id":"empleados_en_obra","kw":["empleados trabajaron en","quien trabajo en","trabajaron en la obra","empleados en obra"],"kw_ro":["cine a lucrat la","angajati pe lucrare"],"tipo":"query","scope":"team","roles":[1,2]},
+    {"id":"lista_empleados","kw":["empleados estan trabajando","lista empleados","que empleados hay","empleados de la empresa"],"kw_ro":["angajati firma","lista angajati","cati angajati"],"tipo":"query","scope":"team","roles":[1,2]},
     # ═══ ADMIN SCOPE ═══
     {"id":"obras_activas","kw":["obras están activas","cuántas obras","obras abiertas"],"kw_ro":["lucrări active","câte lucrări sunt active"],"tipo":"query","scope":"admin","roles":[1,2]},
     {"id":"obra_mas_gasto","kw":["obra tiene más gasto","obra con más gasto"],"kw_ro":["care lucrare are cele mai multe cheltuieli"],"tipo":"query_calc","scope":"admin","roles":[1,2]},
@@ -568,45 +573,72 @@ async def ejecutar_intent(s, intent):
         det = "\n".join([f"  \U0001f3d7\ufe0f *{o}*: {round(v,2)}\u20ac" for o, v in top])
         return f"\U0001f4ca *Gastos del mes: {total}\u20ac*\n\nPor obra:\n{det}"
     
-    if iid == "gastos_empleado":
-        # Extract employee name + date from message
-        texto_lower = s.mensaje_normalizado.lower()
-        # Find employee name - search all active employees
-        emps = await db_get("empleados", "estado=eq.Activo&select=id,nombre&order=nombre")
-        target_emp = None
-        for emp_item in emps:
-            emp_name = emp_item.get("nombre", "").lower()
-            # Match first name or last name
-            for part in emp_name.split():
-                if len(part) > 2 and part in texto_lower:
-                    target_emp = emp_item
-                    break
-            if target_emp:
-                break
-        if not target_emp:
-            return "No identifique al empleado. Dime el nombre exacto \U0001f914"
-        # Determine date (hoy, ayer, or exact date like 25/06/2026, 10-03-2026)
-        fecha = extraer_fecha(texto_lower)
-        # Query gastos for that employee on that date
-        gastos_rows = await db_get("gastos", f"empleado_id=eq.{target_emp['id']}&created_at=gte.{fecha}T00:00:00&created_at=lt.{fecha}T23:59:59&select=proveedor,total,obra,concepto,numero_factura,fecha_factura&order=created_at.desc")
-        if not gastos_rows:
-            # Try by empleado_nombre if empleado_id didn't work
-            nombre_search = target_emp["nombre"].split()[0]
-            gastos_rows = await db_get("gastos", f"empleado_nombre=ilike.*{nombre_search}*&created_at=gte.{fecha}T00:00:00&created_at=lt.{fecha}T23:59:59&select=proveedor,total,obra,concepto,numero_factura,fecha_factura&order=created_at.desc")
-        if not gastos_rows:
-            fecha_txt = "hoy" if fecha == _hoy() else ("ayer" if fecha == _ayer() else fecha)
-            return f"*{target_emp['nombre']}* no tiene facturas registradas {fecha_txt}"
-        total = round(sum(float(r.get("total", 0) or 0) for r in gastos_rows), 2)
-        fecha_txt = "hoy" if fecha == _hoy() else ("ayer" if fecha == _ayer() else fecha)
-        det = "\n".join([f"  \U0001f9fe *{r.get('proveedor','?')}* — {r.get('total',0)}\u20ac\n     Obra: {r.get('obra','?')}" for r in gastos_rows])
-        return f"\U0001f4b8 *Gastos de {target_emp['nombre']} {fecha_txt}:*\n\n{det}\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\U0001f4b0 *TOTAL: {total}\u20ac* ({len(gastos_rows)} facturas)"
-    
+    # ═══ COSTE TOTAL OBRA ═══
     if iid == "coste_obra":
         obras = await db_get("obras", "estado=eq.En curso&select=id,nombre&order=nombre")
         if not obras: return "No hay obras activas"
         lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i, o in enumerate(obras)])
-        await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": eid, "tipo": "coste_obra_seleccion", "dominio": "INTENT", "contexto": {"obras_ids": [o["id"] for o in obras], "obras_nombres": [o["nombre"] for o in obras]}})
+        await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": eid, "tipo": "coste_obra_sel", "dominio": "INTENT", "contexto": {"obras_ids": [o["id"] for o in obras], "obras_nombres": [o["nombre"] for o in obras]}})
         return f"\U0001f4b0 Que obra quieres consultar?\n\n{lista}\n\nDime numero o nombre"
+    
+    # ═══ GASTOS DE EMPLEADO ═══
+    if iid == "gastos_empleado":
+        texto_lower = s.mensaje_normalizado.lower()
+        emps = await db_get("empleados", "estado=eq.Activo&select=id,nombre&order=nombre")
+        target_emp = None
+        for emp_item in emps:
+            for part in emp_item.get("nombre", "").lower().split():
+                if len(part) > 2 and part in texto_lower:
+                    target_emp = emp_item; break
+            if target_emp: break
+        if not target_emp: return "No identifique al empleado. Dime el nombre exacto \U0001f914"
+        fecha = extraer_fecha(texto_lower)
+        gastos_rows = await db_get("gastos", f"empleado_id=eq.{target_emp['id']}&created_at=gte.{fecha}T00:00:00&created_at=lt.{fecha}T23:59:59&select=proveedor,total,obra,concepto&order=created_at.desc")
+        if not gastos_rows:
+            nombre_search = target_emp["nombre"].split()[0]
+            gastos_rows = await db_get("gastos", f"empleado_nombre=ilike.*{nombre_search}*&created_at=gte.{fecha}T00:00:00&created_at=lt.{fecha}T23:59:59&select=proveedor,total,obra,concepto&order=created_at.desc")
+        if not gastos_rows:
+            fecha_txt = "hoy" if fecha == _hoy() else ("ayer" if fecha == _ayer() else fecha)
+            return f"*{target_emp['nombre']}* no tiene facturas {fecha_txt}"
+        total = round(sum(float(r.get("total", 0) or 0) for r in gastos_rows), 2)
+        fecha_txt = "hoy" if fecha == _hoy() else ("ayer" if fecha == _ayer() else fecha)
+        det = "\n".join([f"  \U0001f9fe *{r.get('proveedor','?')}* \u2014 {r.get('total',0)}\u20ac\n     Obra: {r.get('obra','?')}" for r in gastos_rows])
+        return f"\U0001f4b8 *Gastos de {target_emp['nombre']} {fecha_txt}:*\n\n{det}\n\n\u2500\u2500\u2500\n\U0001f4b0 *TOTAL: {total}\u20ac* ({len(gastos_rows)} facturas)"
+    
+    # ═══ HORAS EN OBRA ═══
+    if iid == "horas_obra":
+        obras = await db_get("obras", "estado=eq.En curso&select=id,nombre&order=nombre")
+        if not obras: return "No hay obras activas"
+        lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i, o in enumerate(obras)])
+        texto_lower = s.mensaje_normalizado.lower()
+        periodo = "todo"
+        if "hoy" in texto_lower or "azi" in texto_lower: periodo = "hoy"
+        elif "ayer" in texto_lower or "ieri" in texto_lower: periodo = "ayer"
+        elif "semana" in texto_lower or "saptamana" in texto_lower: periodo = "semana"
+        elif "mes" in texto_lower or "luna" in texto_lower: periodo = "mes"
+        await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": eid, "tipo": "horas_obra_sel", "dominio": "INTENT", "contexto": {"obras_ids": [o["id"] for o in obras], "obras_nombres": [o["nombre"] for o in obras], "periodo": periodo}})
+        return f"\U0001f552 Que obra? Periodo: *{periodo}*\n\n{lista}\n\nDime numero o nombre"
+    
+    # ═══ EMPLEADOS EN OBRA ═══
+    if iid == "empleados_en_obra":
+        obras = await db_get("obras", "estado=eq.En curso&select=id,nombre&order=nombre")
+        if not obras: return "No hay obras activas"
+        lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i, o in enumerate(obras)])
+        texto_lower = s.mensaje_normalizado.lower()
+        periodo = "todo"
+        if "hoy" in texto_lower: periodo = "hoy"
+        elif "ayer" in texto_lower: periodo = "ayer"
+        elif "semana" in texto_lower: periodo = "semana"
+        elif "mes" in texto_lower: periodo = "mes"
+        await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": eid, "tipo": "empleados_obra_sel", "dominio": "INTENT", "contexto": {"obras_ids": [o["id"] for o in obras], "obras_nombres": [o["nombre"] for o in obras], "periodo": periodo}})
+        return f"\U0001f477 Que obra? Periodo: *{periodo}*\n\n{lista}\n\nDime numero o nombre"
+    
+    # ═══ LISTA EMPLEADOS ═══
+    if iid == "lista_empleados":
+        emps = await db_get("empleados", "estado=eq.Activo&select=id,nombre,cargo&order=nombre")
+        if not emps: return "No hay empleados activos"
+        det = "\n".join([f"  \U0001f477 *{e.get('nombre','?')}* \u2014 {e.get('cargo','?')}" for e in emps])
+        return f"*{len(emps)} empleados activos:*\n\n{det}"
     
     return None  # Intent not handled
 
@@ -624,6 +656,16 @@ def detectar(txt,empleado_rol=0,tiene_espera_conf=False):
             return "FICHAJE","confirmar",0.9
         # Not valid confirmation context — fall through to general
     if PS.match(t): return "SALUDO","responder",1.0
+    # ═══ ACCIONES ADMIN CON MAYÚSCULAS ═══
+    txt_raw = txt if 'txt' in dir() else t
+    if "REABRIR" in s.mensaje_original and "OBRA" in s.mensaje_original.upper():
+        return "REABRIR_OBRA","reabrir",1.0
+    if "CERRAR" in s.mensaje_original and "OBRA" in s.mensaje_original.upper():
+        return "CERRAR_OBRA","cerrar",1.0
+    if ("ALTA" in s.mensaje_original and "EMPLEADO" in s.mensaje_original.upper()):
+        return "ALTA_EMPLEADO","crear",1.0
+    if ("BAJA" in s.mensaje_original and "EMPLEADO" in s.mensaje_original.upper()):
+        return "BAJA_EMPLEADO","baja",1.0
     if re.search(r'nueva obra|registra(r|me)?\s*obra|abrir obra|alta obra|dar de alta obra',t): return "OBRA_ALTA","crear",0.95
     if re.search(r'cerrar obra|baja obra|dar de baja',t): return "OBRA_BAJA","cerrar",0.9
     if re.search(r'n[oó]mina|sueldo|salario|cu[aá]nto (le )?debo|pagar a|calcul[ae]|env[ií]a(me)?\\s.*(n[oó]mina|documento)',t): return "NOMINA","calcular",0.95
@@ -1026,7 +1068,33 @@ async def ag_obra_baja(s):
     await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_baja","dominio":"OBRA_BAJA","contexto":{"obras_ids":[o["id"] for o in obras]}})
     return f"Que obra quieres cerrar?\n\n{lista}\n\nDime numero o nombre"
 
-AG={"FICHAJE":ag_fichaje,"OBRA_ALTA":ag_obra_alta,"OBRA_BAJA":ag_obra_baja,"SALUDO":ag_saludo,"OBRAS":ag_obras,"FINANZAS":ag_finanzas,"EMPLEADOS":ag_empleados,"NOMINA":ag_nomina,"DOCUMENTOS":ag_general,"INVENTARIO":ag_general,"GENERAL":ag_general}
+async def ag_reabrir_obra(s):
+    anio = datetime.now().strftime("%Y")
+    obras = await db_get("obras", f"estado=eq.Cerrada&select=id,nombre&order=nombre")
+    if not obras: return "No hay obras cerradas"
+    lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i, o in enumerate(obras)])
+    await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "reabrir_obra_sel", "dominio": "INTENT", "contexto": {"obras_ids": [o["id"] for o in obras], "obras_nombres": [o["nombre"] for o in obras]}})
+    return f"Que obra quieres REABRIR?\n\n{lista}\n\nDime numero o nombre"
+
+async def ag_cerrar_obra_cmd(s):
+    obras = await db_get("obras", "estado=eq.En curso&select=id,nombre&order=nombre")
+    if not obras: return "No hay obras activas"
+    lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i, o in enumerate(obras)])
+    await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "obra_baja", "dominio": "OBRA_BAJA", "contexto": {"obras_ids": [o["id"] for o in obras]}})
+    return f"Que obra quieres CERRAR?\n\n{lista}\n\nDime numero o nombre"
+
+async def ag_alta_empleado(s):
+    await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_nombre", "dominio": "INTENT", "contexto": {}})
+    return "Vamos a dar de alta un empleado \U0001f477\n\n1/6 Nombre completo?"
+
+async def ag_baja_empleado(s):
+    emps = await db_get("empleados", "estado=eq.Activo&select=id,nombre&order=nombre")
+    if not emps: return "No hay empleados activos"
+    lista = "\n".join([f"  {i+1}. *{e['nombre']}*" for i, e in enumerate(emps)])
+    await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "baja_empleado_sel", "dominio": "INTENT", "contexto": {"emps_ids": [e["id"] for e in emps], "emps_nombres": [e["nombre"] for e in emps]}})
+    return f"Que empleado quieres dar de BAJA?\n\n{lista}\n\nDime numero o nombre"
+
+AG={"FICHAJE":ag_fichaje,"OBRA_ALTA":ag_obra_alta,"OBRA_BAJA":ag_obra_baja,"SALUDO":ag_saludo,"OBRAS":ag_obras,"FINANZAS":ag_finanzas,"EMPLEADOS":ag_empleados,"NOMINA":ag_nomina,"DOCUMENTOS":ag_general,"INVENTARIO":ag_general,"GENERAL":ag_general,"REABRIR_OBRA":ag_reabrir_obra,"CERRAR_OBRA":ag_cerrar_obra_cmd,"ALTA_EMPLEADO":ag_alta_empleado,"BAJA_EMPLEADO":ag_baja_empleado}
 
 # ══════════════ ROUTER PRINCIPAL ══════════════
 async def procesar(s):
@@ -1156,43 +1224,147 @@ async def procesar(s):
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
         
-        # Handle coste_obra_seleccion — user selected an obra for cost breakdown
-        if esp.get("tipo") == "coste_obra_seleccion":
-            obras_ids = ctx.get("obras_ids", [])
-            obras_nombres = ctx.get("obras_nombres", [])
+        # Handle coste_obra_sel
+        if esp.get("tipo") == "coste_obra_sel":
+            obras_ids = ctx.get("obras_ids", []); obras_nombres = ctx.get("obras_nombres", [])
+            obra_id, obra_nombre = None, None
             try:
                 sel = int(s.mensaje_normalizado.strip()) - 1
-                if 0 <= sel < len(obras_ids):
-                    obra_id = obras_ids[sel]
-                    obra_nombre = obras_nombres[sel]
-                else:
-                    s.respuesta = "Numero no valido. Dime el numero de la obra."
-                    await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "coste_obra_seleccion", "dominio": "INTENT", "contexto": ctx})
-                    s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
-                    if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
-                    await guardar_ejecucion(s); return s
+                if 0 <= sel < len(obras_ids): obra_id, obra_nombre = obras_ids[sel], obras_nombres[sel]
             except:
-                # Try name match
-                obra_match = None
-                for idx, nombre in enumerate(obras_nombres):
-                    if s.mensaje_normalizado.lower() in nombre.lower() or nombre.lower() in s.mensaje_normalizado.lower():
-                        obra_id = obras_ids[idx]; obra_nombre = nombre; obra_match = True; break
-                if not obra_match:
-                    s.respuesta = "No encontre esa obra. Dime el numero."
-                    await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "coste_obra_seleccion", "dominio": "INTENT", "contexto": ctx})
-                    s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
-                    if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
-                    await guardar_ejecucion(s); return s
-            # Calculate costs
+                for idx, nm in enumerate(obras_nombres):
+                    if s.mensaje_normalizado.lower() in nm.lower(): obra_id, obra_nombre = obras_ids[idx], nm; break
+            if not obra_id:
+                await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "coste_obra_sel", "dominio": "INTENT", "contexto": ctx})
+                s.respuesta = "No encontre esa obra. Dime el numero."; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+                if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+                await guardar_ejecucion(s); return s
             facturas = await db_get("gastos", f"obra_id=eq.{obra_id}&select=total")
             fichajes = await db_get("fichajes_tramos", f"obra_id=eq.{obra_id}&select=coste_total")
-            total_fact = round(sum(float(r.get("total", 0) or 0) for r in facturas), 2)
-            total_mo = round(sum(float(r.get("coste_total", 0) or 0) for r in fichajes), 2)
-            total = round(total_fact + total_mo, 2)
-            s.respuesta = f"\U0001f4b0 *Coste total de {obra_nombre}:*\n\n  \U0001f9fe Facturas/gastos: *{total_fact}\u20ac*\n  \U0001f477 Mano de obra: *{total_mo}\u20ac*\n  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  \U0001f4b0 *TOTAL: {total}\u20ac*"
+            tf = round(sum(float(r.get("total", 0) or 0) for r in facturas), 2)
+            tm = round(sum(float(r.get("coste_total", 0) or 0) for r in fichajes), 2)
+            s.respuesta = f"\U0001f4b0 *Coste total de {obra_nombre}:*\n\n  \U0001f9fe Facturas: *{tf}\u20ac*\n  \U0001f477 Mano de obra: *{tm}\u20ac*\n  \u2500\u2500\u2500\n  \U0001f4b0 *TOTAL: {round(tf+tm,2)}\u20ac*"
             s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
             if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
             await guardar_ejecucion(s); return s
+        
+        # Handle horas_obra_sel / empleados_obra_sel
+        if esp.get("tipo") in ("horas_obra_sel", "empleados_obra_sel"):
+            obras_ids = ctx.get("obras_ids", []); obras_nombres = ctx.get("obras_nombres", []); periodo = ctx.get("periodo", "todo")
+            obra_id, obra_nombre = None, None
+            try:
+                sel = int(s.mensaje_normalizado.strip()) - 1
+                if 0 <= sel < len(obras_ids): obra_id, obra_nombre = obras_ids[sel], obras_nombres[sel]
+            except:
+                for idx, nm in enumerate(obras_nombres):
+                    if s.mensaje_normalizado.lower() in nm.lower(): obra_id, obra_nombre = obras_ids[idx], nm; break
+            if not obra_id:
+                await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": esp.get("tipo"), "dominio": "INTENT", "contexto": ctx})
+                s.respuesta = "No encontre esa obra. Dime el numero."; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+                if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+                await guardar_ejecucion(s); return s
+            # Build date filter
+            from datetime import timedelta
+            df = f"obra_id=eq.{obra_id}"
+            per_txt = periodo
+            if periodo == "hoy": df += f"&fecha=eq.{date.today().isoformat()}"
+            elif periodo == "ayer": df += f"&fecha=eq.{(date.today()-timedelta(days=1)).isoformat()}"
+            elif periodo == "semana":
+                d = date.today(); inicio = (d - timedelta(days=d.weekday())).isoformat()
+                df += f"&fecha=gte.{inicio}&fecha=lte.{d.isoformat()}"
+            elif periodo == "mes": df += f"&fecha=gte.{date.today().strftime('%Y-%m-01')}"
+            # else: todo (no date filter)
+            
+            if esp.get("tipo") == "horas_obra_sel":
+                rows = await db_get("fichajes_tramos", f"{df}&select=empleado_nombre,horas_decimal,coste_total&order=empleado_nombre")
+                if not rows:
+                    s.respuesta = f"No hay fichajes en *{obra_nombre}* ({per_txt})"
+                else:
+                    # Group by cargo/category via empleado lookup
+                    por_emp = {}
+                    for r in rows:
+                        nm = r.get("empleado_nombre", "?")
+                        por_emp[nm] = por_emp.get(nm, 0) + float(r.get("horas_decimal", 0) or 0)
+                    total_h = round(sum(por_emp.values()), 1)
+                    det = "\n".join([f"  \U0001f477 *{nm}*: {round(h,1)}h" for nm, h in sorted(por_emp.items())])
+                    s.respuesta = f"\U0001f552 *Horas en {obra_nombre} ({per_txt}):*\n\n{det}\n\n\u2500\u2500\u2500\n*TOTAL: {total_h}h*"
+            else:
+                rows = await db_get("fichajes_tramos", f"{df}&select=empleado_nombre,horas_decimal&order=empleado_nombre")
+                if not rows:
+                    s.respuesta = f"No hay fichajes en *{obra_nombre}* ({per_txt})"
+                else:
+                    por_emp = {}
+                    for r in rows:
+                        nm = r.get("empleado_nombre", "?")
+                        por_emp[nm] = por_emp.get(nm, 0) + float(r.get("horas_decimal", 0) or 0)
+                    det = "\n".join([f"  \U0001f477 *{nm}* \u2014 {round(h,1)}h" for nm, h in sorted(por_emp.items())])
+                    s.respuesta = f"\U0001f477 *Empleados en {obra_nombre} ({per_txt}):*\n\n{det}\n\n*{len(por_emp)} empleados*"
+            s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+            if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+            await guardar_ejecucion(s); return s
+        
+        # ═══ ACCIONES ADMIN CON MAYÚSCULAS ═══
+        # Handle reabrir_obra_sel
+        if esp.get("tipo") == "reabrir_obra_sel":
+            obras_ids = ctx.get("obras_ids", []); obras_nombres = ctx.get("obras_nombres", [])
+            obra_id, obra_nombre = None, None
+            try:
+                sel = int(s.mensaje_normalizado.strip()) - 1
+                if 0 <= sel < len(obras_ids): obra_id, obra_nombre = obras_ids[sel], obras_nombres[sel]
+            except:
+                for idx, nm in enumerate(obras_nombres):
+                    if s.mensaje_normalizado.lower() in nm.lower(): obra_id, obra_nombre = obras_ids[idx], nm; break
+            if obra_id:
+                await db_post("obras", {"id": obra_id})  # Can't patch via db_post, use direct
+                async with httpx.AsyncClient(timeout=15) as c:
+                    await c.patch(f"{SUPA}/rest/v1/obras?id=eq.{obra_id}", headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Content-Type": "application/json", "Prefer": "return=representation"}, json={"estado": "En curso"})
+                s.respuesta = f"\u2705 Obra *{obra_nombre}* reabierta!"
+            else:
+                s.respuesta = "No encontre esa obra."
+            s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+            if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+            await guardar_ejecucion(s); return s
+        
+        # Handle baja_empleado_sel
+        if esp.get("tipo") == "baja_empleado_sel":
+            emps_ids = ctx.get("emps_ids", []); emps_nombres = ctx.get("emps_nombres", [])
+            emp_id_sel, emp_nombre = None, None
+            try:
+                sel = int(s.mensaje_normalizado.strip()) - 1
+                if 0 <= sel < len(emps_ids): emp_id_sel, emp_nombre = emps_ids[sel], emps_nombres[sel]
+            except:
+                for idx, nm in enumerate(emps_nombres):
+                    if s.mensaje_normalizado.lower() in nm.lower(): emp_id_sel, emp_nombre = emps_ids[idx], nm; break
+            if emp_id_sel:
+                async with httpx.AsyncClient(timeout=15) as c:
+                    await c.patch(f"{SUPA}/rest/v1/empleados?id=eq.{emp_id_sel}", headers={"apikey": SK, "Authorization": f"Bearer {SK}", "Content-Type": "application/json", "Prefer": "return=representation"}, json={"estado": "Baja"})
+                s.respuesta = f"\u2705 *{emp_nombre}* dado de baja."
+            else:
+                s.respuesta = "No encontre ese empleado."
+            s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+            if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+            await guardar_ejecucion(s); return s
+        
+        # Handle alta_empleado steps
+        if esp.get("tipo") and esp["tipo"].startswith("alta_emp_"):
+            paso = esp["tipo"]
+            val = s.mensaje_normalizado.strip()
+            if paso == "alta_emp_nombre": ctx["nombre"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_dni", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "DNI/NIE?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_ejecucion(s); return s
+            elif paso == "alta_emp_dni": ctx["dni"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_tel", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Telefono?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_ejecucion(s); return s
+            elif paso == "alta_emp_tel": ctx["telefono"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_cat", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Categoria? (oficial/ayudante/encargado)"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_ejecucion(s); return s
+            elif paso == "alta_emp_cat": ctx["cargo"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_email", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Email?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_ejecucion(s); return s
+            elif paso == "alta_emp_email": ctx["email"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_dir", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Direccion completa?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_ejecucion(s); return s
+            elif paso == "alta_emp_dir":
+                ctx["direccion"] = val
+                emp_data = {"nombre": ctx.get("nombre",""), "dni_nie": ctx.get("dni",""), "telefono": ctx.get("telefono",""), "cargo": ctx.get("cargo",""), "email": ctx.get("email",""), "direccion": ctx.get("direccion",""), "estado": "Activo", "rol_id": 3}
+                result = await db_post("empleados", emp_data)
+                if isinstance(result, list) or (isinstance(result, dict) and "error" not in str(result).lower()[:50]):
+                    s.respuesta = f"\u2705 Empleado *{ctx.get('nombre','')}* dado de alta!\n\n\U0001f4cb DNI: {ctx.get('dni','')}\n\U0001f4de Tel: {ctx.get('telefono','')}\n\U0001f477 Cargo: {ctx.get('cargo','')}\n\U0001f4e7 Email: {ctx.get('email','')}\n\U0001f3e0 Dir: {ctx.get('direccion','')}"
+                else:
+                    s.respuesta = f"Error al crear empleado: {str(result)[:100]}"
+                s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+                if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+                await guardar_ejecucion(s); return s
         
         # Handle confirmar_fichaje espera — user confirming LLM-parsed hours
         if esp.get("tipo")=="confirmar_fichaje" and consume_espera:
