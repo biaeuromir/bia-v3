@@ -1159,7 +1159,7 @@ async def procesar(s):
         if esp.get("tipo")=="obra_madrid" and consume_espera:
             ctx["fuera_madrid"]="fuera" in s.mensaje_normalizado.lower()
             encs=await db_get("empleados","select=id,nombre,rol_id&rol_id=in.(1,2)&estado=eq.Activo&order=nombre")
-            lista="\n".join([f"{i+1}. {e2['nombre']}" + (" (Admin)" if e2['rol']==1 else "") for i,e2 in enumerate(encs)])
+            lista="\n".join([f"{i+1}. {e2['nombre']}" + (" (Admin)" if e2.get('rol_id')==1 else "") for i,e2 in enumerate(encs)])
             ctx["encargados"]=[e2["id"] for e2 in encs]
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_encargado","dominio":"OBRA_ALTA","contexto":ctx})
             s.respuesta=f"Quien es el encargado?\n\n{lista}\n\nDime numero o nombre";s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
