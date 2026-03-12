@@ -658,6 +658,11 @@ def detectar(txt,empleado_rol=0,tiene_espera_conf=False,txt_original=""):
     if PS.match(t): return "SALUDO","responder",1.0
     # ═══ COMANDOS EXACTOS EN MAYÚSCULAS (si una letra falla, no ejecuta) ═══
     cmd = txt_original.strip()
+    # AYUDA commands
+    if cmd == "AYUDA":
+        return "AYUDA","ayuda_admin",1.0
+    if t.strip() in ("ayuda","help","ajutor"):
+        return "AYUDA_EMP","ayuda_emp",1.0
     if cmd == "REABRIR OBRA": return "REABRIR_OBRA","reabrir",1.0
     if cmd == "CERRAR OBRA": return "CERRAR_OBRA","cerrar",1.0
     if cmd == "ALTA OBRA": return "OBRA_ALTA","crear",1.0
@@ -1092,7 +1097,55 @@ async def ag_baja_empleado(s):
     await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "baja_empleado_sel", "dominio": "INTENT", "contexto": {"emps_ids": [e["id"] for e in emps], "emps_nombres": [e["nombre"] for e in emps]}})
     return f"Que empleado quieres dar de BAJA?\n\n{lista}\n\nDime numero o nombre"
 
-AG={"FICHAJE":ag_fichaje,"OBRA_ALTA":ag_obra_alta,"OBRA_BAJA":ag_obra_baja,"SALUDO":ag_saludo,"OBRAS":ag_obras,"FINANZAS":ag_finanzas,"EMPLEADOS":ag_empleados,"NOMINA":ag_nomina,"DOCUMENTOS":ag_general,"INVENTARIO":ag_general,"GENERAL":ag_general,"REABRIR_OBRA":ag_reabrir_obra,"CERRAR_OBRA":ag_cerrar_obra_cmd,"ALTA_EMPLEADO":ag_alta_empleado,"BAJA_EMPLEADO":ag_baja_empleado}
+async def ag_ayuda_admin(s):
+    return """\U0001f6e0 *COMANDOS ADMIN (MAYUSCULAS EXACTAS):*
+
+\U0001f3d7 *ALTA OBRA* \u2014 Crear obra nueva (4 pasos)
+\U0001f512 *CERRAR OBRA* \u2014 Cerrar obra activa
+\U0001f504 *REABRIR OBRA* \u2014 Reabrir obra cerrada
+\U0001f477 *ALTA EMPLEADO* \u2014 Dar de alta (6 pasos)
+\u274c *BAJA EMPLEADO* \u2014 Dar de baja empleado
+\u2753 *AYUDA* \u2014 Ver esta lista
+
+\U0001f4a1 _Escribe el comando EXACTO en mayusculas_"""
+
+async def ag_ayuda_emp(s):
+    rol = int(s.empleado.get("rol_id", 99) or 99)
+    txt = """\U0001f916 *Que puedo hacer por ti:*
+
+\U0001f552 *Fichajes*
+  \u2022 Manda tus horas: _9-17_ o _de 8 a 18_
+  \u2022 _he fichado hoy?_
+  \u2022 _cuantas horas llevo este mes?_
+  \u2022 _mis fichajes de hoy_
+
+\U0001f9fe *Facturas*
+  \u2022 Manda foto de factura o ticket
+
+\U0001f4b6 *Nominas*
+  \u2022 _enviame mi nomina de febrero_
+  \u2022 _calcula mi nomina_
+
+\U0001f4cb *Info*
+  \u2022 _en que obra estoy?_
+  \u2022 _mis anticipos_
+  \u2022 _cuanto he ganado este mes?_
+
+\U0001f3a4 *Audio* \u2014 Manda nota de voz"""
+    if rol <= 2:
+        txt += """
+
+\U0001f465 *Equipo* (admin/encargado)
+  \u2022 _quien ficho hoy?_
+  \u2022 _resumen de hoy_
+  \u2022 _gastos de la obra_
+  \u2022 _cuanto gasto Nistor hoy?_
+  \u2022 _horas en la obra esta semana_
+
+\U0001f6e0 Escribe *AYUDA* en mayusculas para ver comandos admin"""
+    return txt
+
+AG={"FICHAJE":ag_fichaje,"OBRA_ALTA":ag_obra_alta,"OBRA_BAJA":ag_obra_baja,"SALUDO":ag_saludo,"OBRAS":ag_obras,"FINANZAS":ag_finanzas,"EMPLEADOS":ag_empleados,"NOMINA":ag_nomina,"DOCUMENTOS":ag_general,"INVENTARIO":ag_general,"GENERAL":ag_general,"AYUDA":ag_ayuda_admin,"AYUDA_EMP":ag_ayuda_emp,"REABRIR_OBRA":ag_reabrir_obra,"CERRAR_OBRA":ag_cerrar_obra_cmd,"ALTA_EMPLEADO":ag_alta_empleado,"BAJA_EMPLEADO":ag_baja_empleado}
 
 # ══════════════ ROUTER PRINCIPAL ══════════════
 async def procesar(s):
