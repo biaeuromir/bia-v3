@@ -577,7 +577,7 @@ async def _buscar_y_enviar_nomina_pdf(s,datos,telefono_destino):
     if anio_short:q+=f"&anio=eq.{anio_short}"
     q+="&order=created_at.desc&limit=1&select=drive_file_id,nombre_archivo,mes,anio"
     docs=await db_get("documentos",q)
-    log.info(f"[{s.trace_id}] Doc query: {query} → {len(docs)} results")
+    log.info(f"[{s.trace_id}] Doc query: {q} → {len(docs)} results")
     if not docs:
         s.timer_end("nomina");return f"No encontre la nomina de {mes_abr}-{anio_short} para {emp_nombre} \U0001f4cb"
     doc=docs[0]
