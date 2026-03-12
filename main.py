@@ -471,10 +471,24 @@ def parsear_nomina(texto,empleado_nombre=""):
     return {"empleado_nombre":nombre,"mes":mes,"anio":anio}
 
 async def ag_nomina(s):
-    """Calculate payroll via Python fichajes backend"""
+    """Calculate payroll with role-based access control"""
     s.timer_start("nomina")
     datos=parsear_nomina(s.mensaje_normalizado,s.empleado.get("nombre",""))
-    log.info(f"[{s.trace_id}] Nomina: {datos}")
+    rol=s.empleado.get("rol",99)
+    mi_nombre=s.empleado.get("nombre","").lower()
+    nombre_pedido=datos.get("empleado_nombre","").lower()
+    es_propia=nombre_pedido in mi_nombre or mi_nombre in nombre_pedido or nombre_pedido==mi_nombre
+    log.info(f"[{s.trace_id}] Nomina: {datos} rol={rol} propia={es_propia}")
+    # Access control
+    if rol>=3 and not es_propia:
+        s.timer_end("nomina")
+        return "Solo puedes consultar tu propia nomina \U0001f512"
+    if rol==2 and not es_propia:
+        # Encargado: check if target is admin (rol 1)
+        target=await db_get(f"empleados?nombre=ilike.*{datos['empleado_nombre'].split()[0]}*&select=rol&limit=1")
+        if target and target[0].get("rol")==1:
+            s.timer_end("nomina")
+            return "No tienes acceso a esa nomina \U0001f512"
     try:
         async with httpx.AsyncClient(timeout=30) as c:
             r=await c.post(f"{PYTHON_URL}/calcular-nomina",json=datos)
