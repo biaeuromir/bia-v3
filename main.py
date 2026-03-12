@@ -453,7 +453,7 @@ async def ejecutar_intent(s, intent):
         return f"Hoy han fichado *{len(nombres)}* personas:\n" + "\n".join([f"  \u2705 {n}" for n in nombres])
     
     if iid == "quien_no_ficho":
-        activos = await db_get("empleados", "estado=eq.activo&select=id,nombre")
+        activos = await db_get("empleados", "estado=eq.Activo&select=id,nombre")
         fichados = await db_get("fichajes_tramos", f"fecha=eq.{_hoy()}&select=empleado_id")
         fichados_ids = set(r.get("empleado_id") for r in fichados)
         faltan = [e for e in activos if e["id"] not in fichados_ids]
@@ -514,7 +514,7 @@ async def ejecutar_intent(s, intent):
         return f"*{len(rows)}* obras activas:\n{lista}"
     
     if iid == "empleados_totales":
-        rows = await db_get("empleados", "estado=eq.activo&select=id,nombre&order=nombre")
+        rows = await db_get("empleados", "estado=eq.Activo&select=id,nombre&order=nombre")
         return f"Hay *{len(rows)}* empleados activos"
     
     if iid == "gastos_empresa_hoy":
@@ -572,7 +572,7 @@ async def ejecutar_intent(s, intent):
         # Extract employee name + date from message
         texto_lower = s.mensaje_normalizado.lower()
         # Find employee name - search all active employees
-        emps = await db_get("empleados", "estado=eq.activo&select=id,nombre&order=nombre")
+        emps = await db_get("empleados", "estado=eq.Activo&select=id,nombre&order=nombre")
         target_emp = None
         for emp_item in emps:
             emp_name = emp_item.get("nombre", "").lower()
@@ -1005,7 +1005,7 @@ async def ag_finanzas(s):
     s.timer_end("finanzas"); return r2 or "No pude consultar finanzas. \U0001f527"
 
 async def ag_empleados(s):
-    s.timer_start("emps");e2=await db_get("empleados","select=id,nombre,cargo,estado&estado=eq.activo&order=nombre")
+    s.timer_start("emps");e2=await db_get("empleados","select=id,nombre,cargo,estado&estado=eq.Activo&order=nombre")
     r2=await gpt(f'Empleados:\n{json.dumps(e2,ensure_ascii=False)[:1500]}\n\nPregunta: "{s.mensaje_normalizado}"',"Eres Bia. Corto.","gpt-4o")
     s.timer_end("emps"); return r2 or "No pude consultar empleados. \U0001f527"
 
@@ -1092,7 +1092,7 @@ async def procesar(s):
             await guardar_ejecucion(s);return s
         if esp.get("tipo")=="obra_madrid" and consume_espera:
             ctx["fuera_madrid"]="fuera" in s.mensaje_normalizado.lower()
-            encs=await db_get("empleados","select=id,nombre,rol&rol=in.(1,2)&estado=eq.activo&order=nombre")
+            encs=await db_get("empleados","select=id,nombre,rol&rol=in.(1,2)&estado=eq.Activo&order=nombre")
             lista="\n".join([f"{i+1}. {e2['nombre']}" + (" (Admin)" if e2['rol']==1 else "") for i,e2 in enumerate(encs)])
             ctx["encargados"]=[e2["id"] for e2 in encs]
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_encargado","dominio":"OBRA_ALTA","contexto":ctx})
@@ -1100,7 +1100,7 @@ async def procesar(s):
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
         if esp.get("tipo")=="obra_encargado" and consume_espera:
-            encs=await db_get("empleados","select=id,nombre,rol&rol=in.(1,2)&estado=eq.activo&order=nombre")
+            encs=await db_get("empleados","select=id,nombre,rol&rol=in.(1,2)&estado=eq.Activo&order=nombre")
             try:
                 sel=int(s.mensaje_normalizado.strip())-1;enc=encs[sel] if 0<=sel<len(encs) else encs[0]
             except:enc=next((e2 for e2 in encs if s.mensaje_normalizado.lower() in e2["nombre"].lower()),encs[0])
