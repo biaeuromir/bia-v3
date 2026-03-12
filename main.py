@@ -72,6 +72,13 @@ async def cargar_historial(tel,limit=20):
 async def guardar_msg(tel,eid,role,content):
     await db_post("bia_chat_history",{"telefono":tel,"empleado_id":eid,"role":role,"content":(content or "")[:1000]})
 
+async def borrar_espera(espera_id):
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            await c.delete(f"{SUPA}/rest/v1/bia_esperas?id=eq.{espera_id}",headers={"apikey":SK,"Authorization":f"Bearer {SK}"})
+    except Exception as e:
+        log.error(f"Borrar espera: {e}")
+
 # ══════════════ PERSONALIDAD ══════════════
 BIA_PERSONA="Eres Bia, secretaria inteligente de Euromir. Cercana, directa, con chispa y humor. Emojis con naturalidad. CORTO para WhatsApp (3-5 lineas). Adapta el tono segun las notas del empleado."
 
@@ -88,7 +95,6 @@ FP=[
     {"n":"hr","r":re.compile(r'(\d{1,2})\s*horas?\b',re.I)},
 ]
 FK=re.compile(r'trabaj|ficha|jornada|turno|empiezo|salgo|entrad|salid|curr|hice|estuve|lucrat',re.I)
-FQ=re.compile(r'cuantos|cuántos|quién|quien|empleados.+fich|han fichado|ficharon.+hoy|resumen|informe',re.I)
 FK2=re.compile(r'\d+\s+y\s+(media|cuarto|pico)|ma[nñ]ana\s+\d+\s.+hasta|\d+\s.+hasta\s+las',re.I)
 # Anti-patterns: messages that look like fichaje but aren't
 FA=re.compile(r'(?:(?:ayer|anteayer|antes).+(?:hoy|ahora)|(?:hoy|ahora).+(?:ma[nñ]ana|luego|despu[eé]s)|(?:pedro|juan|carlos|miguel|otro|alguien|[eé]l|ella)\s.+\d{1,2}|no\s+s[eé]|\d{1,2}\s+\d{1,2}\s+\d{1,2}|trabajamos|hicimos|estuvimos|hicieron|y\s+(?:luego|despu[eé]s|m[aá]s\s+tarde)\s+\d)',re.I)
@@ -149,7 +155,7 @@ def parse_fichaje(texto):
             if not eh2: continue
             result=normalizar_turno(f"{sh2}:{sm2}",f"{eh2}:{em2}")
             return {**result,"det":True,"pat":p["n"]}
-    if (FK.search(t) or FK2.search(t)) and not FQ.search(t): return {"det":True,"pat":"kw","needs_llm":True}
+    if FK.search(t) or FK2.search(t): return {"det":True,"pat":"kw","needs_llm":True}
     return {"det":False}
 
 def normalizar_horas(texto):
@@ -246,131 +252,321 @@ async def log_fichaje(trace_id,emp_id,tel,msg_orig,msg_norm,patron,metodo,horas_
     })
 
 
-# ══════════════ SISTEMA DE INTENTS v2 (12 intents, min_match) ══════════════
-import unicodedata
+# ══════════════ SISTEMA DE INTENTS AUTOMÁTICOS ══════════════
 from datetime import timedelta
 
-def _norm_msg(s):
-    """Normalize: lowercase, remove accents, remove signs, collapse spaces"""
-    s=s.lower().strip()
-    s=''.join(c for c in unicodedata.normalize('NFD',s) if unicodedata.category(c)!='Mn')
-    s=re.sub(r'[^\w\s]','',s)
-    return re.sub(r'\s+',' ',s).strip()
-
-def _hoy(): return datetime.now().strftime("%Y-%m-%d")
-def _ayer(): return (datetime.now()-timedelta(days=1)).strftime("%Y-%m-%d")
-def _inicio_mes(): return datetime.now().strftime("%Y-%m-01")
-def _fin_mes():
-    d=datetime.now();m=d.month;y=d.year
-    return f"{y+1}-01-01" if m==12 else f"{y}-{m+1:02d}-01"
-
-INTENTS_V2=[
-    {"id":"como_ficho","kw":["como ficho","como fichar","registrar horas","cum pontez","cum inregistrez ore"],"min":1,"roles":[1,2,3],"tipo":"fixed"},
-    {"id":"como_mandar_gasto","kw":["mandar gasto","enviar gasto","mandar factura","enviar factura","trimite cheltuiala","trimite factura"],"min":1,"roles":[1,2,3],"tipo":"fixed"},
-    {"id":"horas_mes","kw":["horas mes","horas este mes","horas llevo","ore luna","cate ore luna"],"min":2,"roles":[1,2,3],"tipo":"query_calc"},
-    {"id":"horas_hoy","kw":["horas hoy","horas llevo hoy","ore azi","cate ore azi"],"min":2,"roles":[1,2,3],"tipo":"query_calc"},
-    {"id":"he_fichado_hoy","kw":["he fichado hoy","ya fiche hoy","am pontat azi"],"min":1,"roles":[1,2,3],"tipo":"query"},
-    {"id":"fichajes_hoy","kw":["fichajes hoy","mis fichajes hoy","pontaje azi"],"min":2,"roles":[1,2,3],"tipo":"query"},
-    {"id":"obra_actual","kw":["en que obra estoy","mi obra","que obra tengo","ce lucrare am"],"min":2,"roles":[1,2,3],"tipo":"query"},
-    {"id":"anticipos_mios","kw":["anticipos","mis anticipos","avansuri"],"min":1,"roles":[1,2,3],"tipo":"query"},
-    {"id":"ganado_mes","kw":["cuanto he ganado","dinero mes","cuanto cobro","cat am castigat luna"],"min":2,"roles":[1,2,3],"tipo":"query_calc"},
-    {"id":"quien_ficho_hoy","kw":["quien ficho hoy","quien ha fichado","cuantos ficharon","empleados ficharon","cine a pontat azi"],"min":2,"roles":[1,2],"tipo":"query"},
-    {"id":"gastos_obra","kw":["gastos obra","gasto obra","cuanto gastado obra","cheltuieli lucrare"],"min":2,"roles":[1,2],"tipo":"query_calc"},
-    {"id":"resumen_hoy","kw":["resumen hoy","informe hoy","rezumat azi"],"min":1,"roles":[1,2],"tipo":"query_calc"},
+INTENTS = [
+    # ═══ SELF SCOPE — all roles ═══
+    {"id":"horas_mes","kw":["cuántas horas","cuantas horas","horas este mes","horas llevo este mes","horas del mes"],"kw_ro":["câte ore","ore luna asta","ore luna aceasta"],"tipo":"query_calc","scope":"self","roles":[1,2,3]},
+    {"id":"horas_hoy","kw":["cuántas horas hoy","cuantas horas hoy","horas de hoy","horas llevo hoy"],"kw_ro":["câte ore azi","ore azi"],"tipo":"query_calc","scope":"self","roles":[1,2,3]},
+    {"id":"horas_semana","kw":["horas esta semana","horas semana","horas llevo esta semana"],"kw_ro":["ore săptămâna asta","câte ore săptămâna"],"tipo":"query_calc","scope":"self","roles":[1,2,3]},
+    {"id":"horas_ayer","kw":["horas hice ayer","horas ayer","trabajé ayer","trabaje ayer"],"kw_ro":["câte ore ieri","ore ieri"],"tipo":"query_calc","scope":"self","roles":[1,2,3]},
+    {"id":"fichajes_hoy","kw":["mis fichajes de hoy","fichajes tengo hoy","fichajes hoy"],"kw_ro":["pontaj azi","pontajele mele"],"tipo":"query","scope":"self","roles":[1,2,3]},
+    {"id":"he_fichado_hoy","kw":["he fichado hoy","ya he fichado","tengo fichaje hoy"],"kw_ro":["am pontat azi","am făcut pontaj"],"tipo":"query","scope":"self","roles":[1,2,3]},
+    {"id":"entrada_hoy","kw":["hora entré hoy","hora de entrada hoy","cuando entre hoy","a que hora entre"],"kw_ro":["la ce oră am intrat","ora de intrare"],"tipo":"query","scope":"self","roles":[1,2,3]},
+    {"id":"salida_ayer","kw":["hora salí ayer","hora de salida ayer","cuando sali ayer"],"kw_ro":["la ce oră am ieșit ieri","ora de ieșire ieri"],"tipo":"query","scope":"self","roles":[1,2,3]},
+    {"id":"obra_actual","kw":["en qué obra estoy","cuál es mi obra","qué obra tengo","mi obra"],"kw_ro":["la ce lucrare sunt","lucrarea mea","ce lucrare am"],"tipo":"query","scope":"self","roles":[1,2,3]},
+    {"id":"encargado_mi_obra","kw":["quién es el encargado","encargado de mi obra"],"kw_ro":["cine e șeful","responsabil lucrare"],"tipo":"query","scope":"self","roles":[1,2,3]},
+    {"id":"direccion_obra","kw":["dónde está la obra","dirección de la obra","donde trabajo"],"kw_ro":["unde e lucrarea","adresa lucrării"],"tipo":"query","scope":"self","roles":[1,2,3]},
+    {"id":"anticipos_mios","kw":["anticipos pendientes","mis anticipos","cuántos anticipos"],"kw_ro":["am avansuri","avansuri","câte avansuri"],"tipo":"query","scope":"self","roles":[1,2,3]},
+    {"id":"importe_anticipos","kw":["dinero he pedido de anticipo","importe de mis anticipos","dinero anticipado"],"kw_ro":["cât avans am cerut","suma avansuri"],"tipo":"query_calc","scope":"self","roles":[1,2,3]},
+    {"id":"ultimo_anticipo","kw":["último anticipo","ultimo anticipo","cuando pedi el ultimo anticipo"],"kw_ro":["ultimul avans","când am cerut ultimul"],"tipo":"query","scope":"self","roles":[1,2,3]},
+    {"id":"ganado_mes","kw":["cuánto he ganado","cuanto he ganado","cuánto cobraré","dinero de este mes"],"kw_ro":["cât am câștigat luna asta","cât iau luna asta"],"tipo":"query_calc","scope":"self","roles":[1,2,3]},
+    {"id":"valor_horas","kw":["cuánto valen mis horas","valor de mis horas","dinero por horas"],"kw_ro":["cât valorează orele","valoare ore"],"tipo":"query_calc","scope":"self","roles":[1,2,3]},
+    {"id":"como_ficho","kw":["cómo ficho","como ficho","como registrar horas","como se ficha"],"kw_ro":["cum pontez","cum înregistrez orele"],"tipo":"fixed","scope":"self","roles":[1,2,3]},
+    {"id":"como_mando_gasto","kw":["cómo mando un gasto","como envío una factura","como mando un ticket","como enviar factura"],"kw_ro":["cum trimit o cheltuială","cum trimit o factură","cum trimit bonul"],"tipo":"fixed","scope":"self","roles":[1,2,3]},
+    {"id":"como_pido_anticipo","kw":["cómo pedir un anticipo","como se pide un anticipo","como pido anticipo"],"kw_ro":["cum cer un avans","cum se cere avans"],"tipo":"fixed","scope":"self","roles":[1,2,3]},
+    # ═══ TEAM SCOPE — admin + encargado ═══
+    {"id":"quien_ficho_hoy","kw":["quién ha fichado hoy","quien ficho hoy","fichajes del equipo"],"kw_ro":["cine a pontat azi","pontaje echipa"],"tipo":"query","scope":"team","roles":[1,2]},
+    {"id":"quien_no_ficho","kw":["quién no ha fichado","quien falta por fichar","empleados que faltan"],"kw_ro":["cine nu a pontat","cine lipsește"],"tipo":"query","scope":"team","roles":[1,2]},
+    {"id":"horas_equipo_hoy","kw":["horas lleva el equipo hoy","horas del equipo hoy","horas equipo hoy"],"kw_ro":["ore echipa azi","câte ore are echipa azi"],"tipo":"query_calc","scope":"team","roles":[1,2]},
+    {"id":"horas_equipo_semana","kw":["horas equipo semana","horas lleva el equipo esta semana"],"kw_ro":["ore echipa săptămâna","câte ore are echipa săptămâna"],"tipo":"query_calc","scope":"team","roles":[1,2]},
+    {"id":"empleados_obra","kw":["quién trabaja en","empleados de la obra","qué empleados hay"],"kw_ro":["cine lucrează la","angajați lucrare"],"tipo":"query","scope":"team","roles":[1,2]},
+    {"id":"gastos_obra_total","kw":["cuánto se ha gastado en","gastos de esta obra","total gastos obra"],"kw_ro":["cât s-a cheltuit pe lucrare","cheltuieli lucrare"],"tipo":"query_calc","scope":"team","roles":[1,2]},
+    {"id":"gastos_obra_semana","kw":["gastos obra semana","gastado esta semana en"],"kw_ro":["cheltuit săptămâna asta pe lucrare"],"tipo":"query_calc","scope":"team","roles":[1,2]},
+    {"id":"ultimo_gasto_obra","kw":["último gasto de","ultimo gasto obra"],"kw_ro":["ultima cheltuială","ultimul cost lucrare"],"tipo":"query","scope":"team","roles":[1,2]},
+    {"id":"facturas_obra","kw":["facturas hay en","facturas de la obra"],"kw_ro":["facturi la lucrare","ce facturi sunt"],"tipo":"query","scope":"team","roles":[1,2]},
+    {"id":"anticipos_pendientes","kw":["anticipos hay pendientes","anticipos pendientes empresa"],"kw_ro":["avansuri în așteptare","avansuri pendinte"],"tipo":"query","scope":"team","roles":[1,2]},
+    {"id":"dinero_anticipado","kw":["cuánto dinero se ha adelantado","total anticipos empresa"],"kw_ro":["cât s-a dat avans total","total avansuri"],"tipo":"query_calc","scope":"team","roles":[1,2]},
+    # ═══ ADMIN SCOPE ═══
+    {"id":"obras_activas","kw":["obras están activas","cuántas obras","obras abiertas"],"kw_ro":["lucrări active","câte lucrări sunt active"],"tipo":"query","scope":"admin","roles":[1,2]},
+    {"id":"obra_mas_gasto","kw":["obra tiene más gasto","obra con más gasto"],"kw_ro":["care lucrare are cele mai multe cheltuieli"],"tipo":"query_calc","scope":"admin","roles":[1,2]},
+    {"id":"empleados_totales","kw":["cuántos empleados hay","empleados activos"],"kw_ro":["câți angajați sunt","angajați activi"],"tipo":"query","scope":"admin","roles":[1]},
+    {"id":"gastos_empresa_hoy","kw":["cuánto se ha gastado hoy","gastos de hoy empresa"],"kw_ro":["cât s-a cheltuit azi","cheltuieli azi"],"tipo":"query_calc","scope":"admin","roles":[1]},
+    {"id":"gastos_empresa_mes","kw":["cuánto se ha gastado este mes","gastos del mes","total gastos mes"],"kw_ro":["cât s-a cheltuit luna asta","cheltuieli luna"],"tipo":"query_calc","scope":"admin","roles":[1]},
+    {"id":"horas_empresa_mes","kw":["horas lleva la empresa","horas empresa mes"],"kw_ro":["ore firma luna asta","câte ore are firma"],"tipo":"query_calc","scope":"admin","roles":[1]},
+    {"id":"pagos_pendientes","kw":["pagos pendientes","empleados tienen pagos pendientes"],"kw_ro":["plăți restante","ce angajați au plăți"],"tipo":"query","scope":"admin","roles":[1]},
+    {"id":"resumen_hoy","kw":["resumen de hoy","dame un resumen de hoy"],"kw_ro":["rezumat de azi","rezumat azi"],"tipo":"query_calc","scope":"admin","roles":[1,2]},
+    {"id":"resumen_gastos_mes","kw":["resumen de gastos del mes","resumen gastos mes"],"kw_ro":["rezumat cheltuieli luna"],"tipo":"query_calc","scope":"admin","roles":[1,2]},
 ]
 
-FIXED_RESP={
-    "como_ficho":"Puedes fichar mandando algo como *9-17* o *8:30-16* por WhatsApp \U0001f44d",
-    "como_mandar_gasto":"Puedes mandar una foto o PDF del ticket o factura y yo te pedire los datos que falten \U0001f60a",
-}
-
-def detectar_intent_v2(texto,rol):
-    """Count keyword word matches per intent. If matches >= min_match, activate."""
-    tn=_norm_msg(texto)
-    words=set(tn.split())
-    best=None;best_score=0
-    for intent in INTENTS_V2:
+def detectar_intent(texto, rol):
+    """Match text against intent keywords. Returns intent dict or None."""
+    t = texto.lower().strip()
+    # Remove accents for matching
+    import unicodedata
+    def norm(s): return ''.join(c for c in unicodedata.normalize('NFD',s) if unicodedata.category(c)!='Mn')
+    tn = norm(t)
+    best = None
+    best_score = 0
+    for intent in INTENTS:
         if rol not in intent["roles"]: continue
-        score=0
-        for kw in intent["kw"]:
-            kw_norm=_norm_msg(kw)
-            kw_words=set(kw_norm.split())
-            matches=len(words & kw_words)
-            if matches>score: score=matches
-        if score>=intent["min"] and score>best_score:
-            best=intent;best_score=score
+        for kw in intent["kw"] + intent.get("kw_ro", []):
+            kwn = norm(kw.lower())
+            exact_match = tn == kwn
+            bounded_match = len(kwn) >= 10 and re.search(rf'(?<!\w){re.escape(kwn)}(?!\w)', tn)
+            score = len(kwn) + (1000 if exact_match else 0)
+            if (exact_match or bounded_match) and score > best_score:
+                best = intent
+                best_score = score
     return best
 
-async def ejecutar_intent_v2(s,intent):
-    """Execute intent handler."""
-    iid=intent["id"];eid=s.empleado.get("id",0)
-    nombre=s.empleado.get("apodo") or s.empleado.get("nombre","")
+# ═══ DATE HELPERS ═══
+def _hoy(): return datetime.now().strftime("%Y-%m-%d")
+def _ayer(): return (datetime.now()-timedelta(days=1)).strftime("%Y-%m-%d")
+def _inicio_semana():
+    d=datetime.now(); return (d-timedelta(days=d.weekday())).strftime("%Y-%m-%d")
+def _fin_semana():
+    d=datetime.now(); return (d+timedelta(days=6-d.weekday())).strftime("%Y-%m-%d")
+def _inicio_mes(): return datetime.now().strftime("%Y-%m-01")
+def _fin_mes():
+    d=datetime.now(); m=d.month; y=d.year
+    if m==12: return f"{y+1}-01-01"
+    return f"{y}-{m+1:02d}-01"
+
+# ═══ INTENT HANDLERS ═══
+FIXED_RESPONSES = {
+    "como_ficho": "Puedes fichar mandando algo como *9-17* o *8:30-16* por WhatsApp \U0001f44d También vale *de 9 a 17*, *entrado 9 salido 17*, o un audio.",
+    "como_mando_gasto": "Manda una foto o PDF del ticket/factura por WhatsApp. BIA lo lee automáticamente y te pregunta la obra \U0001f60a",
+    "como_pido_anticipo": "Dile a tu encargado o al admin el importe que necesitas. Ellos lo registran en el sistema.",
+}
+
+async def ejecutar_intent(s, intent):
+    """Execute an intent handler and return response string."""
+    iid = intent["id"]
+    eid = s.empleado.get("id", 0)
+    rol = int(s.empleado.get("rol_id", 99) or 99)
+    nombre = s.empleado.get("apodo") or s.empleado.get("nombre", "")
     
-    if iid in FIXED_RESP: return FIXED_RESP[iid]
+    # FIXED responses
+    if iid in FIXED_RESPONSES:
+        return FIXED_RESPONSES[iid]
     
-    if iid=="horas_hoy":
-        rows=await db_get("fichajes_tramos",f"empleado_id=eq.{eid}&fecha=eq.{_hoy()}&select=horas_decimal,obra_nombre")
-        if not rows: return f"Hoy no tienes fichajes, {nombre} \U0001f914"
-        total=round(sum(float(r.get("horas_decimal",0) or 0) for r in rows),1)
-        return f"Hoy llevas *{total}h* trabajadas \U0001f44d"
+    # ═══ SELF: Horas por período ═══
+    if iid == "horas_hoy":
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&fecha=eq.{_hoy()}&select=horas_decimal,obra_nombre")
+        if not rows: return f"Hoy no tienes fichajes registrados, {nombre} \U0001f914"
+        total = round(sum(float(r.get("horas_decimal", 0) or 0) for r in rows), 1)
+        obras = set(r.get("obra_nombre", "?") for r in rows)
+        return f"Hoy llevas *{total}h* trabajadas en {', '.join(obras)} \U0001f44d"
     
-    if iid=="horas_mes":
-        rows=await db_get("fichajes_tramos",f"empleado_id=eq.{eid}&fecha=gte.{_inicio_mes()}&fecha=lt.{_fin_mes()}&select=horas_decimal,obra_nombre")
-        total=round(sum(float(r.get("horas_decimal",0) or 0) for r in rows),1)
-        obras=len(set(r.get("obra_nombre","") for r in rows if r.get("obra_nombre")))
-        return f"Llevas *{total}h* este mes en {obras} obras \U0001f4ca"
+    if iid == "horas_ayer":
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&fecha=eq.{_ayer()}&select=horas_decimal,hora_inicio,hora_fin")
+        if not rows: return f"Ayer no tienes fichajes, {nombre}"
+        total = round(sum(float(r.get("horas_decimal", 0) or 0) for r in rows), 1)
+        return f"Ayer hiciste *{total}h* \U0001f4aa"
     
-    if iid=="he_fichado_hoy":
-        rows=await db_get("fichajes_tramos",f"empleado_id=eq.{eid}&fecha=eq.{_hoy()}&select=id&limit=1")
-        return "Si, hoy ya has fichado \u2705" if rows else "No, hoy todavia no has fichado \u274c"
+    if iid == "horas_semana":
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&fecha=gte.{_inicio_semana()}&fecha=lte.{_fin_semana()}&select=horas_decimal")
+        total = round(sum(float(r.get("horas_decimal", 0) or 0) for r in rows), 1)
+        return f"Esta semana llevas *{total}h* trabajadas \U0001f4aa"
     
-    if iid=="fichajes_hoy":
-        rows=await db_get("fichajes_tramos",f"empleado_id=eq.{eid}&fecha=eq.{_hoy()}&select=hora_inicio,hora_fin,horas_decimal,obra_nombre&order=hora_inicio")
+    if iid == "horas_mes":
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&fecha=gte.{_inicio_mes()}&fecha=lt.{_fin_mes()}&select=horas_decimal,obra_nombre")
+        total = round(sum(float(r.get("horas_decimal", 0) or 0) for r in rows), 1)
+        obras = set(r.get("obra_nombre", "") for r in rows if r.get("obra_nombre"))
+        return f"Llevas *{total}h* este mes en {len(obras)} obras \U0001f4ca"
+    
+    # ═══ SELF: Fichajes ═══
+    if iid == "fichajes_hoy":
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&fecha=eq.{_hoy()}&select=hora_inicio,hora_fin,horas_decimal,obra_nombre&order=hora_inicio")
         if not rows: return f"Hoy no tienes fichajes, {nombre}"
-        det="\n".join([f"  \U0001f552 {str(r.get('hora_inicio',''))[:5]}-{str(r.get('hora_fin',''))[:5]} ({r.get('horas_decimal',0)}h) en *{r.get('obra_nombre','?')}*" for r in rows])
+        det = "\n".join([f"  \U0001f552 {str(r.get('hora_inicio',''))[:5]}-{str(r.get('hora_fin',''))[:5]} ({r.get('horas_decimal',0)}h) en *{r.get('obra_nombre','?')}*" for r in rows])
         return f"Tus fichajes de hoy:\n{det}"
     
-    if iid=="obra_actual":
-        rows=await db_get("fichajes_tramos",f"empleado_id=eq.{eid}&order=fecha.desc,hora_inicio.desc&select=obra_nombre&limit=1")
-        if not rows: return "No tienes fichajes recientes"
-        return f"Tu ultima obra es *{rows[0].get('obra_nombre','?')}* \U0001f3d7\ufe0f"
+    if iid == "he_fichado_hoy":
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&fecha=eq.{_hoy()}&select=id&limit=1")
+        if rows: return f"Sí, hoy ya has fichado \u2705"
+        return f"No, hoy todavía no has fichado \u274c"
     
-    if iid=="anticipos_mios":
-        rows=await db_get("anticipos",f"empleado_id=eq.{eid}&select=id,importe,fecha&order=created_at.desc&limit=10")
-        if not rows: return f"No tienes anticipos, {nombre}"
-        total=round(sum(float(r.get("importe",0) or 0) for r in rows),2)
-        return f"Tienes *{len(rows)}* anticipos por *{total}\u20ac*"
+    if iid == "entrada_hoy":
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&fecha=eq.{_hoy()}&select=hora_inicio&order=hora_inicio.asc&limit=1")
+        if not rows: return "Hoy no tienes fichaje registrado"
+        return f"Hoy entraste a las *{str(rows[0].get('hora_inicio','?'))[:5]}*"
     
-    if iid=="ganado_mes":
-        rows=await db_get("fichajes_tramos",f"empleado_id=eq.{eid}&fecha=gte.{_inicio_mes()}&fecha=lt.{_fin_mes()}&select=horas_decimal,coste_total")
-        total_h=round(sum(float(r.get("horas_decimal",0) or 0) for r in rows),1)
-        total_e=round(sum(float(r.get("coste_total",0) or 0) for r in rows),2)
-        return f"Llevas *{total_h}h* \u2192 aproximadamente *{total_e}\u20ac* \U0001f4b6"
+    if iid == "salida_ayer":
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&fecha=eq.{_ayer()}&select=hora_fin&order=hora_fin.desc&limit=1")
+        if not rows: return "Ayer no tienes fichaje registrado"
+        return f"Ayer saliste a las *{str(rows[0].get('hora_fin','?'))[:5]}*"
     
-    if iid=="quien_ficho_hoy":
-        rows=await db_get("fichajes_tramos",f"fecha=eq.{_hoy()}&select=empleado_nombre&order=empleado_nombre")
-        nombres=sorted(set(r.get("empleado_nombre","?") for r in rows))
-        if not nombres: return "Hoy no ha fichado nadie todavia"
-        return f"Hoy han fichado *{len(nombres)}*:\n"+"\n".join([f"  \u2705 {n}" for n in nombres])
+    # ═══ SELF: Obra info ═══
+    if iid == "obra_actual":
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&order=fecha.desc,hora_inicio.desc&select=obra_nombre,obra_id&limit=1")
+        if not rows: return "No tienes fichajes recientes para determinar tu obra"
+        return f"Tu última obra es *{rows[0].get('obra_nombre','?')}* \U0001f3d7\ufe0f"
     
-    if iid=="gastos_obra":
-        rows=await db_get("gastos","select=total,obra&order=created_at.desc&limit=100")
-        por_obra={}
+    if iid == "encargado_mi_obra":
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&order=fecha.desc&select=obra_id&limit=1")
+        if not rows: return "No pude determinar tu obra actual"
+        obra = await db_get("obras", f"id=eq.{rows[0].get('obra_id','0')}&select=nombre,encargado_id")
+        if not obra or not obra[0].get("encargado_id"): return "No hay encargado asignado a tu obra"
+        enc = await db_get("empleados", f"id=eq.{obra[0]['encargado_id']}&select=nombre")
+        return f"El encargado de *{obra[0].get('nombre','?')}* es *{enc[0].get('nombre','?') if enc else '?'}*"
+    
+    if iid == "direccion_obra":
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&order=fecha.desc&select=obra_id&limit=1")
+        if not rows: return "No pude determinar tu obra"
+        obra = await db_get("obras", f"id=eq.{rows[0].get('obra_id','0')}&select=nombre,direccion")
+        if not obra: return "No encontré la obra"
+        return f"*{obra[0].get('nombre','?')}* está en *{obra[0].get('direccion','dirección no registrada')}*"
+    
+    # ═══ SELF: Anticipos ═══
+    if iid == "anticipos_mios":
+        rows = await db_get("anticipos", f"empleado_id=eq.{eid}&select=id,importe,fecha,estado&order=created_at.desc&limit=10")
+        if not rows: return f"No tienes anticipos registrados, {nombre}"
+        return f"Tienes *{len(rows)}* anticipos. Último: {rows[0].get('importe',0)}\u20ac el {rows[0].get('fecha','?')}"
+    
+    if iid == "importe_anticipos":
+        rows = await db_get("anticipos", f"empleado_id=eq.{eid}&select=importe")
+        total = round(sum(float(r.get("importe", 0) or 0) for r in rows), 2)
+        return f"Llevas *{total}\u20ac* en anticipos"
+    
+    if iid == "ultimo_anticipo":
+        rows = await db_get("anticipos", f"empleado_id=eq.{eid}&order=created_at.desc&limit=1&select=importe,fecha")
+        if not rows: return "No tienes anticipos"
+        return f"Tu último anticipo fue de *{rows[0].get('importe',0)}\u20ac* el {rows[0].get('fecha','?')}"
+    
+    # ═══ SELF: Dinero ═══
+    if iid in ("ganado_mes", "valor_horas"):
+        rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid}&fecha=gte.{_inicio_mes()}&fecha=lt.{_fin_mes()}&select=horas_decimal,coste_hora,coste_total")
+        total_h = round(sum(float(r.get("horas_decimal", 0) or 0) for r in rows), 1)
+        total_e = round(sum(float(r.get("coste_total", 0) or 0) for r in rows), 2)
+        return f"Llevas *{total_h}h* este mes \u2192 aproximadamente *{total_e}\u20ac* \U0001f4b6"
+    
+    # ═══ TEAM: Fichajes equipo ═══
+    if iid == "quien_ficho_hoy":
+        rows = await db_get("fichajes_tramos", f"fecha=eq.{_hoy()}&select=empleado_nombre&order=empleado_nombre")
+        nombres = sorted(set(r.get("empleado_nombre", "?") for r in rows))
+        if not nombres: return "Hoy no ha fichado nadie todavía"
+        return f"Hoy han fichado *{len(nombres)}* personas:\n" + "\n".join([f"  \u2705 {n}" for n in nombres])
+    
+    if iid == "quien_no_ficho":
+        activos = await db_get("empleados", "estado=eq.activo&select=id,nombre")
+        fichados = await db_get("fichajes_tramos", f"fecha=eq.{_hoy()}&select=empleado_id")
+        fichados_ids = set(r.get("empleado_id") for r in fichados)
+        faltan = [e for e in activos if e["id"] not in fichados_ids]
+        if not faltan: return "Todos han fichado hoy \u2705"
+        return f"Faltan por fichar *{len(faltan)}*:\n" + "\n".join([f"  \u274c {e['nombre']}" for e in faltan])
+    
+    if iid == "horas_equipo_hoy":
+        rows = await db_get("fichajes_tramos", f"fecha=eq.{_hoy()}&select=horas_decimal")
+        total = round(sum(float(r.get("horas_decimal", 0) or 0) for r in rows), 1)
+        return f"El equipo lleva *{total}h* hoy \U0001f477"
+    
+    if iid == "horas_equipo_semana":
+        rows = await db_get("fichajes_tramos", f"fecha=gte.{_inicio_semana()}&fecha=lte.{_fin_semana()}&select=horas_decimal")
+        total = round(sum(float(r.get("horas_decimal", 0) or 0) for r in rows), 1)
+        return f"Esta semana el equipo lleva *{total}h*"
+    
+    if iid == "empleados_obra":
+        obras = await db_get("obras", "estado=eq.En curso&select=id,nombre")
+        if not obras: return "No hay obras activas"
+        # Use last obra mentioned or first
+        lista = "\n".join([f"  \U0001f3d7\ufe0f *{o['nombre']}*" for o in obras[:10]])
+        return f"Obras activas:\n{lista}\n\nDime cuál y te digo los empleados"
+    
+    # ═══ TEAM: Gastos obra ═══
+    if iid == "gastos_obra_total":
+        rows = await db_get("gastos", "select=total,obra&order=created_at.desc&limit=100")
+        total = round(sum(float(r.get("total", 0) or 0) for r in rows), 2)
+        return f"Total gastos registrados: *{total}\u20ac* en {len(rows)} facturas \U0001f4b8"
+    
+    if iid == "ultimo_gasto_obra":
+        rows = await db_get("gastos", "order=created_at.desc&limit=1&select=concepto,total,proveedor,obra,fecha_factura")
+        if not rows: return "No hay gastos registrados"
+        g = rows[0]
+        return f"Último gasto: *{g.get('proveedor','?')}* — {g.get('total',0)}\u20ac ({g.get('obra','?')}) el {g.get('fecha_factura','?')}"
+    
+    if iid == "facturas_obra":
+        rows = await db_get("gastos", "order=created_at.desc&limit=10&select=proveedor,total,obra,fecha_factura")
+        if not rows: return "No hay facturas registradas"
+        det = "\n".join([f"  \U0001f9fe {r.get('proveedor','?')} — {r.get('total',0)}\u20ac ({r.get('obra','?')})" for r in rows[:10]])
+        return f"Últimas facturas:\n{det}"
+    
+    if iid == "anticipos_pendientes":
+        rows = await db_get("anticipos", "estado=in.(pendiente,solicitado,PENDIENTE,SOLICITADO)&select=empleado_id,importe&order=created_at.desc")
+        if not rows: return "No hay anticipos pendientes \u2705"
+        total = round(sum(float(r.get("importe", 0) or 0) for r in rows), 2)
+        return f"Hay *{len(rows)}* anticipos pendientes por *{total}\u20ac*"
+    
+    if iid == "dinero_anticipado":
+        rows = await db_get("anticipos", "select=importe")
+        total = round(sum(float(r.get("importe", 0) or 0) for r in rows), 2)
+        return f"Total anticipado: *{total}\u20ac*"
+    
+    # ═══ ADMIN: Empresa ═══
+    if iid == "obras_activas":
+        rows = await db_get("obras", "estado=eq.En curso&select=id,nombre&order=nombre")
+        if not rows: return "No hay obras activas"
+        lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i, o in enumerate(rows)])
+        return f"*{len(rows)}* obras activas:\n{lista}"
+    
+    if iid == "empleados_totales":
+        rows = await db_get("empleados", "estado=eq.activo&select=id,nombre&order=nombre")
+        return f"Hay *{len(rows)}* empleados activos"
+    
+    if iid == "gastos_empresa_hoy":
+        rows = await db_get("gastos", f"fecha_factura=eq.{_hoy()}&select=total")
+        total = round(sum(float(r.get("total", 0) or 0) for r in rows), 2)
+        return f"Hoy lleváis *{total}\u20ac* de gasto" if rows else "Hoy no hay gastos registrados"
+    
+    if iid == "gastos_empresa_mes":
+        rows = await db_get("gastos", f"fecha_factura=gte.{_inicio_mes()}&fecha_factura=lt.{_fin_mes()}&select=total")
+        total = round(sum(float(r.get("total", 0) or 0) for r in rows), 2)
+        return f"Este mes lleváis *{total}\u20ac* de gasto total \U0001f4ca"
+    
+    if iid == "horas_empresa_mes":
+        rows = await db_get("fichajes_tramos", f"fecha=gte.{_inicio_mes()}&fecha=lt.{_fin_mes()}&select=horas_decimal")
+        total = round(sum(float(r.get("horas_decimal", 0) or 0) for r in rows), 1)
+        return f"La empresa lleva *{total}h* este mes"
+    
+    if iid == "obra_mas_gasto":
+        rows = await db_get("gastos", "select=obra,total&order=created_at.desc&limit=500")
+        if not rows: return "No hay gastos"
+        from collections import Counter
+        por_obra = {}
         for r in rows:
-            o=r.get("obra","Sin obra");por_obra[o]=por_obra.get(o,0)+float(r.get("total",0) or 0)
-        top=sorted(por_obra.items(),key=lambda x:-x[1])[:5]
-        det="\n".join([f"  \U0001f3d7\ufe0f *{o}*: {round(v,2)}\u20ac" for o,v in top])
-        return f"Gastos por obra:\n{det}"
+            o = r.get("obra", "?")
+            por_obra[o] = por_obra.get(o, 0) + float(r.get("total", 0) or 0)
+        top = sorted(por_obra.items(), key=lambda x: -x[1])[:3]
+        det = "\n".join([f"  {i+1}. *{o}*: {round(v,2)}\u20ac" for i, (o, v) in enumerate(top)])
+        return f"Obras con más gasto:\n{det}"
     
-    if iid=="resumen_hoy":
-        fich=await db_get("fichajes_tramos",f"fecha=eq.{_hoy()}&select=horas_decimal,empleado_nombre")
-        gast=await db_get("gastos",f"fecha_factura=eq.{_hoy()}&select=total")
-        h=round(sum(float(r.get("horas_decimal",0) or 0) for r in fich),1)
-        g=round(sum(float(r.get("total",0) or 0) for r in gast),2)
-        n=len(set(r.get("empleado_nombre","") for r in fich))
+    if iid == "pagos_pendientes":
+        rows = await db_get("pagos_nomina", "estado=in.(pendiente,PENDIENTE)&select=empleado_id,importe")
+        if not rows: return "No hay pagos pendientes \u2705"
+        return f"Hay *{len(rows)}* pagos pendientes"
+    
+    if iid == "resumen_hoy":
+        fich = await db_get("fichajes_tramos", f"fecha=eq.{_hoy()}&select=horas_decimal,empleado_nombre")
+        gast = await db_get("gastos", f"fecha_factura=eq.{_hoy()}&select=total")
+        h = round(sum(float(r.get("horas_decimal", 0) or 0) for r in fich), 1)
+        g = round(sum(float(r.get("total", 0) or 0) for r in gast), 2)
+        n = len(set(r.get("empleado_nombre","") for r in fich))
         return f"\U0001f4ca *Resumen de hoy:*\n  \U0001f552 {h}h trabajadas\n  \U0001f477 {n} empleados ficharon\n  \U0001f4b8 {g}\u20ac en gastos"
     
-    return None
+    if iid == "resumen_gastos_mes":
+        rows = await db_get("gastos", f"fecha_factura=gte.{_inicio_mes()}&fecha_factura=lt.{_fin_mes()}&select=total,obra")
+        total = round(sum(float(r.get("total", 0) or 0) for r in rows), 2)
+        por_obra = {}
+        for r in rows:
+            o = r.get("obra", "Sin obra")
+            por_obra[o] = por_obra.get(o, 0) + float(r.get("total", 0) or 0)
+        top = sorted(por_obra.items(), key=lambda x: -x[1])[:5]
+        det = "\n".join([f"  \U0001f3d7\ufe0f *{o}*: {round(v,2)}\u20ac" for o, v in top])
+        return f"\U0001f4ca *Gastos del mes: {total}\u20ac*\n\nPor obra:\n{det}"
+    
+    return None  # Intent not handled
 
 # ══════════════ DETECTOR ══════════════
 PS=re.compile(r'^(hola|buenos d[ií]as|buenas( tardes| noches)?|qu[eé] tal|hey)[\s!.?]*$',re.I)
@@ -400,6 +596,40 @@ async def clasificar(txt):
         d=json.loads(raw.strip());dom=d.get("dominio","GENERAL").upper();conf=float(d.get("confianza",0.5))
         return (dom if dom in ["FICHAJE","OBRAS","FINANZAS","EMPLEADOS","NOMINA","DOCUMENTOS","INVENTARIO","GENERAL"] else "GENERAL"),conf
     except: return "GENERAL",0.3
+
+def debe_consumir_espera(esp, texto, rol):
+    """Only consume an espera when the message looks like a valid reply for that step."""
+    t=(texto or "").strip()
+    if not t:
+        return False
+    t_low=t.lower()
+    tipo=esp.get("tipo","")
+
+    if tipo=="n8n_pending":
+        return True
+    if tipo=="nomina_dni":
+        return bool(re.match(r'^[A-Z0-9][A-Z0-9\- ]{6,14}$',t.upper()))
+    if tipo=="confirmar_fichaje":
+        return t_low in("si","sí","ok","vale","correcto","yes") or parse_fichaje(t_low).get("det",False)
+    if tipo=="obra_madrid":
+        return bool(re.search(r'\b(dentro|fuera|madrid|si|sí|no)\b',t_low))
+    if tipo in("factura_obra","obra_baja","obra_encargado"):
+        if t.isdigit():
+            return True
+        if "?" in t:
+            return False
+        if detectar_intent(t,rol):
+            return False
+        dom,_,_=detectar(t,rol,False)
+        return dom=="AMBIGUO" and len(t.split())<=6
+    if tipo in("obra_nombre","obra_direccion"):
+        if "?" in t:
+            return False
+        if detectar_intent(t,rol):
+            return False
+        dom,_,_=detectar(t,rol,False)
+        return dom=="AMBIGUO"
+    return True
 
 # ══════════════ AGENTE FICHAJE BLINDADO ══════════════
 async def ag_fichaje(s):
@@ -631,7 +861,7 @@ async def ag_nomina(s):
     """Nómina: cálculo (admin/encargado) o envío PDF (empleados con DNI verification)"""
     s.timer_start("nomina")
     texto=s.mensaje_normalizado.lower()
-    rol=int(s.empleado.get("rol_id",99) or 99)
+    rol=int(s.empleado.get("rol_id",s.empleado.get("rol",99)) or 99)
     datos=parsear_nomina(s.mensaje_normalizado,s.empleado.get("nombre",""))
     log.info(f"[{s.trace_id}] Nomina: {datos} rol={rol}")
     
@@ -651,7 +881,7 @@ async def ag_nomina(s):
         pass  # Admin: full access
     elif rol==2:
         if not es_propia:
-            target=await db_get(f"empleados?nombre=ilike.*{datos['empleado_nombre'].split()[0]}*&select=rol_id&limit=1")
+            target=await db_get("empleados",f"nombre=ilike.*{datos['empleado_nombre'].split()[0]}*&select=rol_id&limit=1")
             if target and int(target[0].get("rol_id",0) or 0)==1:
                 s.timer_end("nomina");return "No tienes acceso a esa nomina \U0001f512"
     else:
@@ -760,17 +990,20 @@ AG={"FICHAJE":ag_fichaje,"OBRA_ALTA":ag_obra_alta,"OBRA_BAJA":ag_obra_baja,"SALU
 async def procesar(s):
     t0=time.time();s.trace_id=str(uuid.uuid4())[:8]
     s.mensaje_normalizado=normalizar_horas(s.mensaje_original.strip())
+    rol_actual=int(s.empleado.get("rol_id",s.empleado.get("rol",99)) or 99)
     log.info(f"[{s.trace_id}] \U0001f4e9 {s.empleado.get('nombre','?')}: {s.mensaje_original[:80]}")
     # Espera activa
     esperas=await db_get("bia_esperas",f"telefono=eq.{s.telefono}&order=created_at.desc&limit=1")
     if esperas:
         esp=esperas[0];log.info(f"[{s.trace_id}] \u23f3 Espera: {esp['tipo']}")
-        try:
-            async with httpx.AsyncClient(timeout=10) as c:await c.delete(f"{SUPA}/rest/v1/bia_esperas?id=eq.{esp['id']}",headers={"apikey":SK,"Authorization":f"Bearer {SK}"})
-        except:pass
         ctx=esp.get("contexto",{}) or {}
+        consume_espera=debe_consumir_espera(esp,s.mensaje_normalizado,rol_actual)
+        if consume_espera:
+            await borrar_espera(esp["id"])
+        else:
+            log.info(f"[{s.trace_id}] Manteniendo espera {esp.get('tipo')} para no mezclar flujos")
         # Factura obra selection
-        if esp.get("tipo")=="factura_obra":
+        if esp.get("tipo")=="factura_obra" and consume_espera:
             log.info(f"[{s.trace_id}] Factura obra selection: {s.mensaje_normalizado}")
             factura=ctx.get("factura",{})
             try:
@@ -803,19 +1036,19 @@ async def procesar(s):
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
         # Obra alta steps
-        if esp.get("tipo")=="obra_nombre":
+        if esp.get("tipo")=="obra_nombre" and consume_espera:
             ctx["nombre"]=s.mensaje_normalizado
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_direccion","dominio":"OBRA_ALTA","contexto":ctx})
             s.respuesta="Direccion de la obra?";s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
-        if esp.get("tipo")=="obra_direccion":
+        if esp.get("tipo")=="obra_direccion" and consume_espera:
             ctx["direccion"]=s.mensaje_normalizado
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_madrid","dominio":"OBRA_ALTA","contexto":ctx})
             s.respuesta="Dentro o fuera de Madrid?";s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
-        if esp.get("tipo")=="obra_madrid":
+        if esp.get("tipo")=="obra_madrid" and consume_espera:
             ctx["fuera_madrid"]="fuera" in s.mensaje_normalizado.lower()
             encs=await db_get("empleados","select=id,nombre,rol&rol=in.(1,2)&estado=eq.activo&order=nombre")
             lista="\n".join([f"{i+1}. {e2['nombre']}" + (" (Admin)" if e2['rol']==1 else "") for i,e2 in enumerate(encs)])
@@ -824,7 +1057,7 @@ async def procesar(s):
             s.respuesta=f"Quien es el encargado?\n\n{lista}\n\nDime numero o nombre";s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
-        if esp.get("tipo")=="obra_encargado":
+        if esp.get("tipo")=="obra_encargado" and consume_espera:
             encs=await db_get("empleados","select=id,nombre,rol&rol=in.(1,2)&estado=eq.activo&order=nombre")
             try:
                 sel=int(s.mensaje_normalizado.strip())-1;enc=encs[sel] if 0<=sel<len(encs) else encs[0]
@@ -838,7 +1071,7 @@ async def procesar(s):
             s.dominio="OBRA_ALTA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
-        if esp.get("tipo")=="obra_baja":
+        if esp.get("tipo")=="obra_baja" and consume_espera:
             obras=await db_get("obras","select=id,nombre,spreadsheet_id&estado=eq.En curso&order=nombre")
             try:
                 sel=int(s.mensaje_normalizado.strip())-1;obra=obras[sel] if 0<=sel<len(obras) else None
@@ -850,7 +1083,7 @@ async def procesar(s):
             s.dominio="OBRA_BAJA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
-        if esp.get("tipo")=="n8n_pending":
+        if esp.get("tipo")=="n8n_pending" and consume_espera:
             try:
                 fwd={"data":{"key":{"remoteJid":f"{s.telefono}@s.whatsapp.net","fromMe":False},"message":{"conversation":s.mensaje_original}}}
                 async with httpx.AsyncClient(timeout=30) as fc:await fc.post(N8N_WEBHOOK or f"{N8N}/webhook/whatsapp-euromir",json=fwd)
@@ -859,10 +1092,10 @@ async def procesar(s):
             s.dominio="N8N";s.dominio_fuente="espera";s.respuesta="";s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
         # General espera
         # Handle nomina_dni espera — employee verifying identity for nómina PDF
-        if esp.get("tipo")=="nomina_dni":
+        if esp.get("tipo")=="nomina_dni" and consume_espera:
             dni_input=s.mensaje_normalizado.strip().upper().replace(" ","").replace("-","")
             emp_id=s.empleado.get("id",0)
-            emp_data=await db_get(f"empleados?id=eq.{emp_id}&select=dni_nie,telefono,nombre")
+            emp_data=await db_get("empleados",f"id=eq.{emp_id}&select=dni_nie,telefono,nombre")
             if emp_data:
                 dni_db=(emp_data[0].get("dni_nie","") or "").strip().upper().replace(" ","").replace("-","")
                 tel_db=(emp_data[0].get("telefono","") or "").strip()
@@ -873,6 +1106,7 @@ async def procesar(s):
                 elif not dni_db:
                     s.respuesta="No tienes DNI registrado en el sistema. Contacta con administracion \U0001f4cb"
                 else:
+                    await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"nomina_dni","dominio":"NOMINA","contexto":ctx})
                     s.respuesta="DNI incorrecto \U0001f512"
             else:
                 s.respuesta="No encontre tus datos \U0001f527"
@@ -881,7 +1115,7 @@ async def procesar(s):
             await guardar_ejecucion(s);return s
         
         # Handle confirmar_fichaje espera — user confirming LLM-parsed hours
-        if esp.get("tipo")=="confirmar_fichaje":
+        if esp.get("tipo")=="confirmar_fichaje" and consume_espera:
             resp_low=s.mensaje_normalizado.lower().strip()
             if resp_low in("si","sí","ok","vale","correcto","yes"):
                 # User confirmed — rebuild message from saved hours and process as fichaje
@@ -897,27 +1131,38 @@ async def procesar(s):
                     await guardar_ejecucion(s);return s
             else:
                 # User wants to repeat hours — let it flow through normal detection
-                pass
-        s.dominio=esp.get("dominio","FICHAJE");s.dominio_fuente="espera";s.confianza=1.0;s.accion="continuar";s.metadata["espera_contexto"]=ctx
-        s.timer_start("agente")
-        try:s.respuesta=await AG.get(s.dominio,ag_general)(s)
-        except Exception as e:s.add_error(f"Espera: {e}");s.respuesta="Problema tecnico \U0001f527"
-        s.timer_end("agente");s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
-    # ═══ INTENTS DETERMINISTAS (sin IA) ═══
-    rol_i=int(s.empleado.get("rol_id",99) or 99)
-    intent=detectar_intent_v2(s.mensaje_normalizado,rol_i)
+                log.info(f"[{s.trace_id}] Nuevas horas tras confirmar, continuando sin reutilizar espera")
+                consume_espera=False
+        if consume_espera:
+            s.dominio=esp.get("dominio","FICHAJE");s.dominio_fuente="espera";s.confianza=1.0;s.accion="continuar";s.metadata["espera_contexto"]=ctx
+            s.timer_start("agente")
+            try:s.respuesta=await AG.get(s.dominio,ag_general)(s)
+            except Exception as e:s.add_error(f"Espera: {e}");s.respuesta="Problema tecnico \U0001f527"
+            s.timer_end("agente");s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
+    # ═══ CHECK INTENTS FIRST (deterministic, no AI) ═══
+    rol_intent = rol_actual
+    intent = detectar_intent(s.mensaje_normalizado, rol_intent)
     if intent:
-        s.timer_start("intent");s.dominio="INTENT";s.dominio_fuente="intent";s.accion=intent["id"]
-        log.info(f"[{s.trace_id}] \U0001f4a1 Intent: {intent['id']}")
+        s.timer_start("intent")
+        s.dominio = "INTENT"
+        s.dominio_fuente = "intent"
+        s.accion = intent["id"]
+        log.info(f"[{s.trace_id}] \U0001f4a1 Intent: {intent['id']} ({intent['tipo']})")
         try:
-            resp=await ejecutar_intent_v2(s,intent)
+            resp = await ejecutar_intent(s, intent)
             if resp:
-                s.respuesta=resp;s.timer_end("intent");s.duracion_ms=int((time.time()-t0)*1000)
+                s.respuesta = resp
+                s.timer_end("intent")
+                s.duracion_ms = int((time.time() - t0) * 1000)
                 log.info(f"[{s.trace_id}] \u2705 Intent {intent['id']} {s.duracion_ms}ms")
-                if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
-                await guardar_ejecucion(s);return s
+                if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+                await guardar_ejecucion(s)
+                return s
         except Exception as e:
-            log.error(f"[{s.trace_id}] Intent error: {e}");s.add_error(f"Intent: {e}")
+            log.error(f"[{s.trace_id}] Intent error: {e}")
+            s.add_error(f"Intent: {e}")
         s.timer_end("intent")
     
     # Detector (with confirmation protection)
@@ -925,7 +1170,7 @@ async def procesar(s):
     conf_esperas=await db_get("bia_esperas",f"telefono=eq.{s.telefono}&dominio=eq.FICHAJE&order=created_at.desc&limit=1&select=tipo,dominio")
     tiene_espera_conf=bool(conf_esperas and conf_esperas[0].get("tipo") in ("seleccion_obra","confirmar_fichaje","confirmar_turno"))
     s.timer_start("detector")
-    dom,acc,conf=detectar(s.mensaje_normalizado,s.empleado.get("rol_id",0),tiene_espera_conf)
+    dom,acc,conf=detectar(s.mensaje_normalizado,rol_actual,tiene_espera_conf)
     s.timer_end("detector")
     if dom!="AMBIGUO":
         s.dominio,s.accion,s.confianza,s.dominio_fuente=dom,acc,conf,"regex"
