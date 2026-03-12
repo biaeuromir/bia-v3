@@ -773,9 +773,11 @@ async def webhook(req:Request):
             except:pass
             return{"ok":True}
         if not cont or not tel:return{"ok":True}
-        # Dedup
-        last=await db_get("bia_chat_history",f"telefono=eq.{tel}&role=eq.user&order=created_at.desc&limit=1&select=content")
-        if last and last[0].get("content","")==cont:log.info(f"Dup from {tel}");return{"ok":True}
+        # Dedup (skip for pure numbers — they're always menu selections)
+        is_selection=cont.strip().isdigit() and 1<=int(cont.strip())<=20
+        if not is_selection:
+            last=await db_get("bia_chat_history",f"telefono=eq.{tel}&role=eq.user&order=created_at.desc&limit=1&select=content")
+            if last and last[0].get("content","")==cont:log.info(f"Dup from {tel}");return{"ok":True}
         emps=await db_get("empleados",f"telefono=eq.{tel}&select=*")
         if not emps:await wa(f"{tel}@s.whatsapp.net","No estas registrado.");return{"ok":True}
         emp=emps[0];await guardar_msg(tel,emp.get("id",0),"user",cont)
