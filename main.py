@@ -503,7 +503,7 @@ async def ag_nomina(s):
     """Nómina: cálculo (admin/encargado) o envío PDF (empleados con DNI verification)"""
     s.timer_start("nomina")
     texto=s.mensaje_normalizado.lower()
-    rol=int(s.empleado.get("rol",99) or 99)
+    rol=int(s.empleado.get("rol_id",99) or 99)
     datos=parsear_nomina(s.mensaje_normalizado,s.empleado.get("nombre",""))
     log.info(f"[{s.trace_id}] Nomina: {datos} rol={rol}")
     
@@ -523,8 +523,8 @@ async def ag_nomina(s):
         pass  # Admin: full access
     elif rol==2:
         if not es_propia:
-            target=await db_get(f"empleados?nombre=ilike.*{datos['empleado_nombre'].split()[0]}*&select=rol&limit=1")
-            if target and int(target[0].get("rol",0) or 0)==1:
+            target=await db_get(f"empleados?nombre=ilike.*{datos['empleado_nombre'].split()[0]}*&select=rol_id&limit=1")
+            if target and int(target[0].get("rol_id",0) or 0)==1:
                 s.timer_end("nomina");return "No tienes acceso a esa nomina \U0001f512"
     else:
         # Operario: only own, needs DNI for PDF
@@ -729,9 +729,9 @@ async def procesar(s):
         if esp.get("tipo")=="nomina_dni":
             dni_input=s.mensaje_normalizado.strip().upper().replace(" ","").replace("-","")
             emp_id=s.empleado.get("id",0)
-            emp_data=await db_get(f"empleados?id=eq.{emp_id}&select=dni,telefono,nombre")
+            emp_data=await db_get(f"empleados?id=eq.{emp_id}&select=dni_nie,telefono,nombre")
             if emp_data:
-                dni_db=(emp_data[0].get("dni","") or "").strip().upper().replace(" ","").replace("-","")
+                dni_db=(emp_data[0].get("dni_nie","") or "").strip().upper().replace(" ","").replace("-","")
                 tel_db=(emp_data[0].get("telefono","") or "").strip()
                 if dni_db and dni_input==dni_db and s.telefono==tel_db:
                     datos_nomina=ctx.get("datos_nomina",{"empleado_nombre":s.empleado.get("nombre",""),"mes":datetime.now().month,"anio":datetime.now().year})
@@ -775,7 +775,7 @@ async def procesar(s):
     conf_esperas=await db_get("bia_esperas",f"telefono=eq.{s.telefono}&dominio=eq.FICHAJE&order=created_at.desc&limit=1&select=tipo,dominio")
     tiene_espera_conf=bool(conf_esperas and conf_esperas[0].get("tipo") in ("seleccion_obra","confirmar_fichaje","confirmar_turno"))
     s.timer_start("detector")
-    dom,acc,conf=detectar(s.mensaje_normalizado,s.empleado.get("rol",0),tiene_espera_conf)
+    dom,acc,conf=detectar(s.mensaje_normalizado,s.empleado.get("rol_id",0),tiene_espera_conf)
     s.timer_end("detector")
     if dom!="AMBIGUO":
         s.dominio,s.accion,s.confianza,s.dominio_fuente=dom,acc,conf,"regex"
