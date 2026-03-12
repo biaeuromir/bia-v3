@@ -288,7 +288,7 @@ INTENTS = [
     {"id":"facturas_obra","kw":["facturas hay en","facturas de la obra"],"kw_ro":["facturi la lucrare","ce facturi sunt"],"tipo":"query","scope":"team","roles":[1,2]},
     {"id":"anticipos_pendientes","kw":["anticipos hay pendientes","anticipos pendientes empresa"],"kw_ro":["avansuri în așteptare","avansuri pendinte"],"tipo":"query","scope":"team","roles":[1,2]},
     {"id":"dinero_anticipado","kw":["cuánto dinero se ha adelantado","total anticipos empresa"],"kw_ro":["cât s-a dat avans total","total avansuri"],"tipo":"query_calc","scope":"team","roles":[1,2]},
-    {"id":"coste_obra","kw":["cuánto gastado en obra","coste obra","gasto total obra","cuanto nos hemos gastado","gastado en la obra"],"kw_ro":["cât s-a cheltuit pe lucrare","cost lucrare"],"tipo":"query_calc","scope":"team","roles":[1,2]},
+    {"id":"coste_obra","kw":["cuánto gastado en obra","coste obra","gasto total obra","cuanto nos hemos gastado","gastado en la obra","gasto en la obra","que gasto tenemos","gastos de la obra","gasto obra","cuanto llevamos gastado","que llevamos gastado"],"kw_ro":["cât s-a cheltuit pe lucrare","cost lucrare"],"tipo":"query_calc","scope":"team","roles":[1,2]},
     # ═══ ADMIN SCOPE ═══
     {"id":"obras_activas","kw":["obras están activas","cuántas obras","obras abiertas"],"kw_ro":["lucrări active","câte lucrări sunt active"],"tipo":"query","scope":"admin","roles":[1,2]},
     {"id":"obra_mas_gasto","kw":["obra tiene más gasto","obra con más gasto"],"kw_ro":["care lucrare are cele mai multe cheltuieli"],"tipo":"query_calc","scope":"admin","roles":[1,2]},
