@@ -275,6 +275,8 @@ async def ag_fichaje(s):
                 await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
             if "obra" in msg.lower() and "1." in msg:
                 await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"ok":True}})
+            elif "?" in msg:
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"continuation":True}})
             s.timer_end("fichaje"); return msg
         except Exception as e:
             s.add_error(f"Fichaje espera: {e}"); s.timer_end("fichaje")
@@ -397,6 +399,9 @@ async def ag_fichaje(s):
         if "obra" in msg.lower() and "1." in msg:
             log.info(f"[{s.trace_id}] Saving espera seleccion_obra")
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"ok":True}})
+        elif "?" in msg:
+            log.info(f"[{s.trace_id}] Backend asked question, saving espera continuation")
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"continuation":True}})
         
         # ═══ STEP 5: Log detallado ═══
         await log_fichaje(s.trace_id,emp_id,s.telefono,s.mensaje_original,texto,patron,metodo,
