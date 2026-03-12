@@ -288,6 +288,7 @@ INTENTS = [
     {"id":"facturas_obra","kw":["facturas hay en","facturas de la obra"],"kw_ro":["facturi la lucrare","ce facturi sunt"],"tipo":"query","scope":"team","roles":[1,2]},
     {"id":"anticipos_pendientes","kw":["anticipos hay pendientes","anticipos pendientes empresa"],"kw_ro":["avansuri în așteptare","avansuri pendinte"],"tipo":"query","scope":"team","roles":[1,2]},
     {"id":"dinero_anticipado","kw":["cuánto dinero se ha adelantado","total anticipos empresa"],"kw_ro":["cât s-a dat avans total","total avansuri"],"tipo":"query_calc","scope":"team","roles":[1,2]},
+    {"id":"coste_obra","kw":["cuánto gastado en obra","coste obra","gasto total obra","cuanto nos hemos gastado","gastado en la obra"],"kw_ro":["cât s-a cheltuit pe lucrare","cost lucrare"],"tipo":"query_calc","scope":"team","roles":[1,2]},
     # ═══ ADMIN SCOPE ═══
     {"id":"obras_activas","kw":["obras están activas","cuántas obras","obras abiertas"],"kw_ro":["lucrări active","câte lucrări sunt active"],"tipo":"query","scope":"admin","roles":[1,2]},
     {"id":"obra_mas_gasto","kw":["obra tiene más gasto","obra con más gasto"],"kw_ro":["care lucrare are cele mai multe cheltuieli"],"tipo":"query_calc","scope":"admin","roles":[1,2]},
@@ -565,6 +566,13 @@ async def ejecutar_intent(s, intent):
         top = sorted(por_obra.items(), key=lambda x: -x[1])[:5]
         det = "\n".join([f"  \U0001f3d7\ufe0f *{o}*: {round(v,2)}\u20ac" for o, v in top])
         return f"\U0001f4ca *Gastos del mes: {total}\u20ac*\n\nPor obra:\n{det}"
+    
+    if iid == "coste_obra":
+        obras = await db_get("obras", "estado=eq.En curso&select=id,nombre&order=nombre")
+        if not obras: return "No hay obras activas"
+        lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i, o in enumerate(obras)])
+        await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": eid, "tipo": "coste_obra_seleccion", "dominio": "INTENT", "contexto": {"obras_ids": [o["id"] for o in obras], "obras_nombres": [o["nombre"] for o in obras]}})
+        return f"\U0001f4b0 Que obra quieres consultar?\n\n{lista}\n\nDime numero o nombre"
     
     return None  # Intent not handled
 
@@ -1113,6 +1121,44 @@ async def procesar(s):
             s.dominio="NOMINA";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
+        
+        # Handle coste_obra_seleccion — user selected an obra for cost breakdown
+        if esp.get("tipo") == "coste_obra_seleccion":
+            obras_ids = ctx.get("obras_ids", [])
+            obras_nombres = ctx.get("obras_nombres", [])
+            try:
+                sel = int(s.mensaje_normalizado.strip()) - 1
+                if 0 <= sel < len(obras_ids):
+                    obra_id = obras_ids[sel]
+                    obra_nombre = obras_nombres[sel]
+                else:
+                    s.respuesta = "Numero no valido. Dime el numero de la obra."
+                    await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "coste_obra_seleccion", "dominio": "INTENT", "contexto": ctx})
+                    s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+                    if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+                    await guardar_ejecucion(s); return s
+            except:
+                # Try name match
+                obra_match = None
+                for idx, nombre in enumerate(obras_nombres):
+                    if s.mensaje_normalizado.lower() in nombre.lower() or nombre.lower() in s.mensaje_normalizado.lower():
+                        obra_id = obras_ids[idx]; obra_nombre = nombre; obra_match = True; break
+                if not obra_match:
+                    s.respuesta = "No encontre esa obra. Dime el numero."
+                    await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "coste_obra_seleccion", "dominio": "INTENT", "contexto": ctx})
+                    s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+                    if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+                    await guardar_ejecucion(s); return s
+            # Calculate costs
+            facturas = await db_get("gastos", f"obra_id=eq.{obra_id}&select=total")
+            fichajes = await db_get("fichajes_tramos", f"obra_id=eq.{obra_id}&select=coste_total")
+            total_fact = round(sum(float(r.get("total", 0) or 0) for r in facturas), 2)
+            total_mo = round(sum(float(r.get("coste_total", 0) or 0) for r in fichajes), 2)
+            total = round(total_fact + total_mo, 2)
+            s.respuesta = f"\U0001f4b0 *Coste total de {obra_nombre}:*\n\n  \U0001f9fe Facturas/gastos: *{total_fact}\u20ac*\n  \U0001f477 Mano de obra: *{total_mo}\u20ac*\n  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  \U0001f4b0 *TOTAL: {total}\u20ac*"
+            s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+            if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+            await guardar_ejecucion(s); return s
         
         # Handle confirmar_fichaje espera — user confirming LLM-parsed hours
         if esp.get("tipo")=="confirmar_fichaje" and consume_espera:
