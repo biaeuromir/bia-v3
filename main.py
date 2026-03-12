@@ -588,11 +588,11 @@ async def ejecutar_intent(s, intent):
         # Determine date (hoy, ayer, or exact date like 25/06/2026, 10-03-2026)
         fecha = extraer_fecha(texto_lower)
         # Query gastos for that employee on that date
-        gastos_rows = await db_get("gastos", f"empleado_id=eq.{target_emp['id']}&fecha_factura=eq.{fecha}&select=proveedor,total,obra,concepto,numero_factura&order=created_at.desc")
+        gastos_rows = await db_get("gastos", f"empleado_id=eq.{target_emp['id']}&created_at=gte.{fecha}T00:00:00&created_at=lt.{fecha}T23:59:59&select=proveedor,total,obra,concepto,numero_factura,fecha_factura&order=created_at.desc")
         if not gastos_rows:
             # Try by empleado_nombre if empleado_id didn't work
             nombre_search = target_emp["nombre"].split()[0]
-            gastos_rows = await db_get("gastos", f"empleado_nombre=ilike.*{nombre_search}*&fecha_factura=eq.{fecha}&select=proveedor,total,obra,concepto,numero_factura&order=created_at.desc")
+            gastos_rows = await db_get("gastos", f"empleado_nombre=ilike.*{nombre_search}*&created_at=gte.{fecha}T00:00:00&created_at=lt.{fecha}T23:59:59&select=proveedor,total,obra,concepto,numero_factura,fecha_factura&order=created_at.desc")
         if not gastos_rows:
             fecha_txt = "hoy" if fecha == _hoy() else ("ayer" if fecha == _ayer() else fecha)
             return f"*{target_emp['nombre']}* no tiene facturas registradas {fecha_txt}"
