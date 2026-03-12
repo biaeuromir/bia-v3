@@ -120,7 +120,7 @@ def normalizar_turno(sr,er):
         return {"ok":False,"error_code":"ZERO_DURATION","ambiguous":False}
     else:
         gap=sh-eh
-        if 5<=sh<=12 and 1<=eh<=9 and gap>=3:
+        if 5<=sh<=12 and 1<=eh<=9 and gap>=2:
             eh+=12;e=f"{eh:02d}:{em:02d}";e_min=eh*60+em;dur=e_min-s_min;inferred_pm=True
         elif sh>=18 and eh<12:
             dur=(24*60-s_min)+e_min;overnight=True
@@ -158,6 +158,25 @@ def normalizar_horas(texto):
     t=re.sub(r'(\d{1,2})\s*(?:de la tarde|de la noche|pm|p\.m\.)',tarde_fix,t,flags=re.I)
     t=re.sub(r'(\d{1,2})\s*(?:de la ma.ana|am|a\.m\.)',r'\1',t,flags=re.I)
     return t
+
+
+def extraer_fecha(texto):
+    """Extract date reference from message."""
+    from datetime import date,timedelta
+    t=texto.lower()
+    hoy=date.today()
+    if "ayer" in t: return (hoy-timedelta(days=1)).isoformat()
+    if "anteayer" in t or "antes de ayer" in t: return (hoy-timedelta(days=2)).isoformat()
+    import re as re2
+    dm=re2.search(r'(\d{1,2})[/\-](\d{1,2})(?:[/\-](\d{2,4}))?',t)
+    if dm:
+        d,m=int(dm.group(1)),int(dm.group(2))
+        y=int(dm.group(3)) if dm.group(3) else hoy.year
+        if y<100: y+=2000
+        if 1<=d<=31 and 1<=m<=12:
+            try: return date(y,m,d).isoformat()
+            except: pass
+    return hoy.isoformat()
 
 # ══════════════ MINI LLM NORMALIZADOR ══════════════
 FICHAJE_LLM_SYS="""Eres un parser de fichajes laborales. Tu UNICO trabajo es extraer horas de entrada y salida.
@@ -260,7 +279,7 @@ async def ag_fichaje(s):
     t0=time.time()
     texto=s.mensaje_normalizado
     emp_id=s.empleado.get("id",0)
-    hoy=date.today().isoformat()
+    hoy=extraer_fecha(texto)
     
     # Continuation from espera (obra selection) — rebuild backend state + send selection
     if s.accion=="continuar" and s.dominio_fuente=="espera":
@@ -289,7 +308,7 @@ async def ag_fichaje(s):
         except Exception as e:
             s.add_error(f"Fichaje espera: {e}"); s.timer_end("fichaje")
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
-            return "Problema con el fichaje. Repite el numero de obra \U0001f527"
+            return "Problema registrando el fichaje \U0001f527 Repite tus horas (ej: 9-17)"
     
     # Confirmation flow — pass through to backend
     if s.accion=="confirmar":
@@ -422,7 +441,7 @@ async def ag_fichaje(s):
         s.timer_end("fichaje")
         if s.dominio_fuente=="espera":
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
-        return "Problema con el fichaje. Repite el numero de obra \U0001f527"
+        return "Problema registrando el fichaje \U0001f527 Repite tus horas (ej: 9-17)"
 
 # ══════════════ OTROS AGENTES ══════════════
 async def ag_saludo(s):
