@@ -658,11 +658,7 @@ def detectar(txt,empleado_rol=0,tiene_espera_conf=False,txt_original=""):
     if PS.match(t): return "SALUDO","responder",1.0
     # ═══ COMANDOS EXACTOS EN MAYÚSCULAS (si una letra falla, no ejecuta) ═══
     cmd = txt_original.strip()
-    # AYUDA: exact uppercase → admin, lowercase → employee
-    if cmd == "AYUDA":
-        return "AYUDA","ayuda_admin",1.0
-    if cmd != "AYUDA" and t.strip() in ("ayuda","help","ajutor"):
-        return "AYUDA_EMP","ayuda_emp",1.0
+
     if cmd == "REABRIR OBRA": return "REABRIR_OBRA","reabrir",1.0
     if cmd == "CERRAR OBRA": return "CERRAR_OBRA","cerrar",1.0
     if cmd == "ALTA OBRA": return "OBRA_ALTA","crear",1.0
