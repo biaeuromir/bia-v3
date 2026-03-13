@@ -1149,6 +1149,23 @@ async def procesar(s):
     s.mensaje_normalizado=normalizar_horas(s.mensaje_original.strip())
     rol_actual=int(s.empleado.get("rol_id",s.empleado.get("rol",99)) or 99)
     log.info(f"[{s.trace_id}] \U0001f4e9 {s.empleado.get('nombre','?')}: {s.mensaje_original[:80]}")
+    # ═══ AYUDA — absolute first check, before esperas ═══
+    _cmd = s.mensaje_original.strip()
+    if _cmd == "AYUDA":
+        s.dominio="AYUDA";s.dominio_fuente="cmd"
+        s.respuesta="\U0001f6e0 *COMANDOS ADMIN (MAYUSCULAS EXACTAS):*\n\n\U0001f3d7 *ALTA OBRA* — Crear obra nueva\n\U0001f512 *CERRAR OBRA* — Cerrar obra activa\n\U0001f504 *REABRIR OBRA* — Reabrir obra cerrada\n\U0001f477 *ALTA EMPLEADO* — Dar de alta (6 pasos)\n\u274c *BAJA EMPLEADO* — Dar de baja\n\u2753 *AYUDA* — Ver esta lista\n\n\U0001f4a1 _Escribe el comando EXACTO en mayusculas_"
+        s.duracion_ms=int((time.time()-t0)*1000)
+        if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+        await guardar_ejecucion(s);return s
+    if _cmd.lower() in ("ayuda","help","ajutor"):
+        s.dominio="AYUDA_EMP";s.dominio_fuente="cmd"
+        _rol=int(s.empleado.get("rol_id",99) or 99)
+        _txt="\U0001f916 *Que puedo hacer por ti:*\n\n\U0001f552 *Fichajes*\n  Manda tus horas: _9-17_ o _de 8 a 18_\n  _he fichado hoy?_\n  _cuantas horas llevo?_\n\n\U0001f9fe *Facturas*\n  Manda foto de factura o ticket\n\n\U0001f4b6 *Nominas*\n  _enviame mi nomina de febrero_\n\n\U0001f4cb *Info*\n  _en que obra estoy?_ | _mis anticipos_ | _cuanto he ganado?_\n\n\U0001f3a4 *Audio* — Manda nota de voz"
+        if _rol<=2: _txt+="\n\n\U0001f465 *Equipo*\n  _quien ficho hoy?_ | _resumen de hoy_\n  _gastos de la obra_ | _horas en la obra_"
+        s.respuesta=_txt
+        s.duracion_ms=int((time.time()-t0)*1000)
+        if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+        await guardar_ejecucion(s);return s
     # Espera activa
     esperas=await db_get("bia_esperas",f"telefono=eq.{s.telefono}&order=created_at.desc&limit=1")
     if esperas:
