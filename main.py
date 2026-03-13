@@ -1206,7 +1206,7 @@ async def procesar(s):
     s.mensaje_normalizado=normalizar_horas(s.mensaje_original.strip())
     rol_actual=int(s.empleado.get("rol_id",s.empleado.get("rol",99)) or 99)
     log.info(f"[{s.trace_id}] \U0001f4e9 {s.empleado.get('nombre','?')}: {s.mensaje_original[:80]}")
-    # ═══ MENU SYSTEM — role-based, bilingual ═══
+    # ═══ MENU SYSTEM — role-based, bilingual, numeric ═══
     _cmd = s.mensaje_original.strip()
     _cmd_low = _cmd.lower()
     if _cmd_low in ("ayuda","help","menu","ajutor"):
@@ -1215,21 +1215,28 @@ async def procesar(s):
         if _cmd_low == "ajutor": _idioma = "ro"
         _nombre=s.empleado.get("apodo") or s.empleado.get("nombre","")
         s.dominio="MENU";s.dominio_fuente="cmd"
+        
         if _rol == 1:
-            s.respuesta=f"\U0001f6e0 *COMANDOS ADMIN (MAYUSCULAS EXACTAS):*\n\n\U0001f3d7 *ALTA OBRA*\n\U0001f512 *CERRAR OBRA*\n\U0001f504 *REABRIR OBRA*\n\U0001f477 *ALTA EMPLEADO*\n\u274c *BAJA EMPLEADO*\n\U0001f552 *HORAS OBRA*\n\U0001f4b8 *GASTOS EMPLEADO*\n\U0001f4b0 *GASTOS OBRA*\n\U0001f4ca *CALCULAR NOMINA*\n\U0001f4c4 *ENVIAR NOMINA*\n\U0001f4b6 *ANTICIPO*\n\U0001f4b3 *REGISTRAR ANTICIPO*\n\u2753 *AYUDA*"
+            # ADMIN: 18 options (12 admin + 6 personal)
+            s.respuesta=f"\U0001f6e0 Hola {_nombre}! Menu admin:\n\n*ADMIN:*\n1. ALTA OBRA\n2. CERRAR OBRA\n3. REABRIR OBRA\n4. ALTA EMPLEADO\n5. BAJA EMPLEADO\n6. HORAS OBRA\n7. GASTOS EMPLEADO\n8. GASTOS OBRA\n9. CALCULAR NOMINA\n10. ENVIAR NOMINA\n11. ANTICIPO\n12. REGISTRAR ANTICIPO\n\n*PERSONAL:*\n13. Fichar\n14. Mi nomina\n15. Cuanto cobro\n16. Horas trabajadas\n17. Mis anticipos\n18. Datos empresa\n\nDime numero o comando \U0001f60a"
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"menu_admin","dominio":"MENU","contexto":{"idioma":_idioma}})
+        
         elif _rol == 2:
+            # ENCARGADO: 14 options (7 equipo + 7 personal) — sin BAJA EMP, CALC/ENVIAR NOM, ANTICIPO, REG ANTICIPO
             if _idioma == "ro":
-                s.respuesta=f"\U0001f477 Buna {_nombre}! Comenzi encargado:\n\n\U0001f552 *HORAS OBRA*\n\U0001f4b0 *GASTOS OBRA*\n\U0001f4b8 *GASTOS EMPLEADO*\n\U0001f504 *REABRIR OBRA*\n\U0001f512 *CERRAR OBRA*\n\n\U0001f4a1 _Scrie comanda EXACTA cu majuscule_\n\nSau scrie *menu* pentru optiuni personale"
+                s.respuesta=f"\U0001f477 Buna {_nombre}!\n\n*ECHIPA:*\n1. ALTA OBRA\n2. CERRAR OBRA\n3. REABRIR OBRA\n4. ALTA EMPLEADO\n5. HORAS OBRA\n6. GASTOS EMPLEADO\n7. GASTOS OBRA\n\n*PERSONAL:*\n8. Pontaj\n9. Calculeaza salariu\n10. Cat castig\n11. Ore lucrate\n12. Trimite-mi Nomina\n13. Avansurile mele\n14. Date firma\n15. Encargado meu\n\nSpune-mi numarul \U0001f60a"
             else:
-                s.respuesta=f"\U0001f477 Hola {_nombre}! Comandos encargado:\n\n\U0001f552 *HORAS OBRA*\n\U0001f4b0 *GASTOS OBRA*\n\U0001f4b8 *GASTOS EMPLEADO*\n\U0001f504 *REABRIR OBRA*\n\U0001f512 *CERRAR OBRA*\n\n\U0001f4a1 _Escribe el comando EXACTO en mayusculas_\n\nO escribe *menu* para opciones personales"
+                s.respuesta=f"\U0001f477 Hola {_nombre}!\n\n*EQUIPO:*\n1. ALTA OBRA\n2. CERRAR OBRA\n3. REABRIR OBRA\n4. ALTA EMPLEADO\n5. HORAS OBRA\n6. GASTOS EMPLEADO\n7. GASTOS OBRA\n\n*PERSONAL:*\n8. Fichar\n9. Calcular nomina\n10. Cuanto cobro\n11. Horas trabajadas\n12. Enviame mi nomina\n13. Mis anticipos\n14. Datos empresa\n15. Mi encargado\n\nDime numero o comando \U0001f60a"
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"menu_enc","dominio":"MENU","contexto":{"idioma":_idioma}})
+        
         else:
-            # Employee menu — numeric
+            # EMPLEADO: 8 options
             if _idioma == "ro":
-                s.respuesta=f"\U0001f916 Buna {_nombre}! Ce ai nevoie?\n\n1\ufe0f\u20e3 Pontaj\n2\ufe0f\u20e3 Calculeaza salariu\n3\ufe0f\u20e3 Cat castig\n4\ufe0f\u20e3 Ore lucrate\n5\ufe0f\u20e3 Trimite-mi Nomina\n6\ufe0f\u20e3 Avansurile mele\n7\ufe0f\u20e3 Date firma\n8\ufe0f\u20e3 Encargado meu\n\nSpune-mi numarul \U0001f60a sau scrie-mi!"
+                s.respuesta=f"\U0001f916 Buna {_nombre}! Ce ai nevoie?\n\n1. Pontaj\n2. Calculeaza salariu\n3. Cat castig\n4. Ore lucrate\n5. Trimite-mi Nomina\n6. Avansurile mele\n7. Date firma\n8. Encargado meu\n\nSpune-mi numarul \U0001f60a sau scrie-mi!"
             else:
-                s.respuesta=f"\U0001f916 Hola {_nombre}! Que necesitas?\n\n1\ufe0f\u20e3 Fichar\n2\ufe0f\u20e3 Calcular nomina\n3\ufe0f\u20e3 Cuanto cobro\n4\ufe0f\u20e3 Horas trabajadas\n5\ufe0f\u20e3 Enviame mi nomina\n6\ufe0f\u20e3 Mis anticipos\n7\ufe0f\u20e3 Datos empresa\n8\ufe0f\u20e3 Mi encargado\n\nDime el numero \U0001f60a o escribeme!"
-            # Create menu espera for number selection
+                s.respuesta=f"\U0001f916 Hola {_nombre}! Que necesitas?\n\n1. Fichar\n2. Calcular nomina\n3. Cuanto cobro\n4. Horas trabajadas\n5. Enviame mi nomina\n6. Mis anticipos\n7. Datos empresa\n8. Mi encargado\n\nDime el numero \U0001f60a o escribeme!"
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"menu_emp","dominio":"MENU","contexto":{"idioma":_idioma}})
+        
         s.duracion_ms=int((time.time()-t0)*1000)
         if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
         await guardar_ejecucion(s);return s
@@ -1774,6 +1781,65 @@ async def procesar(s):
             await guardar_ejecucion(s);return s
         
         # ═══ MENU EMPLEADO HANDLERS ═══
+        # ADMIN MENU: number → execute command
+        if esp.get("tipo") == "menu_admin":
+            idioma = ctx.get("idioma", "es")
+            try: sel = int(s.mensaje_normalizado.strip())
+            except: sel = 0
+            # Map admin numbers to CMD commands
+            cmd_map_admin = {1:"ALTA OBRA",2:"CERRAR OBRA",3:"REABRIR OBRA",4:"ALTA EMPLEADO",5:"BAJA EMPLEADO",6:"HORAS OBRA",7:"GASTOS EMPLEADO",8:"GASTOS OBRA",9:"CALCULAR NOMINA",10:"ENVIAR NOMINA",11:"ANTICIPO",12:"REGISTRAR ANTICIPO"}
+            emp_map_admin = {13:1,14:5,15:3,16:4,17:6,18:7}  # personal options → employee menu numbers
+            if sel in cmd_map_admin:
+                cmd_name = cmd_map_admin[sel]
+                _cmd_map2 = {"HORAS OBRA":"CMD_HORAS_OBRA","GASTOS EMPLEADO":"CMD_GASTOS_EMP","GASTOS OBRA":"CMD_GASTOS_OBRA","CALCULAR NOMINA":"CMD_CALC_NOMINA","ENVIAR NOMINA":"CMD_ENVIAR_NOMINA","ANTICIPO":"CMD_ANTICIPO","REGISTRAR ANTICIPO":"CMD_REG_ANTICIPO","REABRIR OBRA":"REABRIR_OBRA","CERRAR OBRA":"CERRAR_OBRA","ALTA EMPLEADO":"ALTA_EMPLEADO","BAJA EMPLEADO":"BAJA_EMPLEADO","ALTA OBRA":"OBRA_ALTA"}
+                s.dominio = _cmd_map2.get(cmd_name, "GENERAL"); s.dominio_fuente = "menu"
+                try: s.respuesta = await AG.get(s.dominio, ag_general)(s)
+                except Exception as e: s.respuesta = f"Error: {str(e)[:100]}"
+            elif sel in emp_map_admin:
+                # Redirect to employee menu handler
+                ctx["from_admin"] = True
+                s.mensaje_normalizado = str(emp_map_admin[sel])
+                # Fall through to menu_emp handler below
+                esp["tipo"] = "menu_emp"
+            else:
+                s.respuesta = "Dime un numero del 1 al 18"
+                s.dominio = "MENU"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+                await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "menu_admin", "dominio": "MENU", "contexto": ctx})
+                if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+                await guardar_ejecucion(s); return s
+            if sel in cmd_map_admin:
+                s.duracion_ms = int((time.time() - t0) * 1000)
+                if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+                await guardar_ejecucion(s); return s
+        
+        # ENCARGADO MENU: number → execute command or personal
+        if esp.get("tipo") == "menu_enc":
+            idioma = ctx.get("idioma", "es")
+            try: sel = int(s.mensaje_normalizado.strip())
+            except: sel = 0
+            cmd_map_enc = {1:"ALTA OBRA",2:"CERRAR OBRA",3:"REABRIR OBRA",4:"ALTA EMPLEADO",5:"HORAS OBRA",6:"GASTOS EMPLEADO",7:"GASTOS OBRA"}
+            emp_map_enc = {8:1,9:2,10:3,11:4,12:5,13:6,14:7,15:8}
+            if sel in cmd_map_enc:
+                cmd_name = cmd_map_enc[sel]
+                _cmd_map2 = {"HORAS OBRA":"CMD_HORAS_OBRA","GASTOS EMPLEADO":"CMD_GASTOS_EMP","GASTOS OBRA":"CMD_GASTOS_OBRA","REABRIR OBRA":"REABRIR_OBRA","CERRAR OBRA":"CERRAR_OBRA","ALTA EMPLEADO":"ALTA_EMPLEADO","ALTA OBRA":"OBRA_ALTA"}
+                s.dominio = _cmd_map2.get(cmd_name, "GENERAL"); s.dominio_fuente = "menu"
+                try: s.respuesta = await AG.get(s.dominio, ag_general)(s)
+                except Exception as e: s.respuesta = f"Error: {str(e)[:100]}"
+                s.duracion_ms = int((time.time() - t0) * 1000)
+                if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+                await guardar_ejecucion(s); return s
+            elif sel in emp_map_enc:
+                ctx["from_enc"] = True
+                s.mensaje_normalizado = str(emp_map_enc[sel])
+                esp["tipo"] = "menu_emp"
+            else:
+                s.respuesta = "Dime un numero del 1 al 15" if idioma != "ro" else "Spune-mi un numar de la 1 la 15"
+                s.dominio = "MENU"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+                await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "menu_enc", "dominio": "MENU", "contexto": ctx})
+                if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+                await guardar_ejecucion(s); return s
+        
+        # EMPLOYEE MENU (also handles redirects from admin/encargado personal options)
         if esp.get("tipo") == "menu_emp":
             idioma = ctx.get("idioma", "es")
             try: sel = int(s.mensaje_normalizado.strip())
