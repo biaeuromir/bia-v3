@@ -1223,6 +1223,18 @@ async def procesar(s):
         s.duracion_ms=int((time.time()-t0)*1000)
         if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
         await guardar_ejecucion(s);return s
+    # ═══ CMD EXACTOS MAYUSCULAS (before esperas and intents) ═══
+    _cmd_map={"HORAS OBRA":"CMD_HORAS_OBRA","GASTOS EMPLEADO":"CMD_GASTOS_EMP","GASTOS OBRA":"CMD_GASTOS_OBRA","CALCULAR NOMINA":"CMD_CALC_NOMINA","ENVIAR NOMINA":"CMD_ENVIAR_NOMINA","ANTICIPO":"CMD_ANTICIPO","REGISTRAR ANTICIPO":"CMD_REG_ANTICIPO","REABRIR OBRA":"REABRIR_OBRA","CERRAR OBRA":"CERRAR_OBRA","ALTA EMPLEADO":"ALTA_EMPLEADO","BAJA EMPLEADO":"BAJA_EMPLEADO","ALTA OBRA":"OBRA_ALTA"}
+    if _cmd in _cmd_map:
+        s.dominio=_cmd_map[_cmd];s.dominio_fuente="cmd";s.accion="paso1"
+        log.info(f"[{s.trace_id}] \U0001f6e0 CMD: {_cmd} -> {s.dominio}")
+        s.timer_start("agente")
+        try:s.respuesta=await AG.get(s.dominio,ag_general)(s)
+        except Exception as e:s.add_error(f"CMD: {e}");s.respuesta=f"Error: {str(e)[:100]} \U0001f527"
+        s.timer_end("agente");s.duracion_ms=int((time.time()-t0)*1000)
+        if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+        await guardar_ejecucion(s);return s
+    
     # Espera activa
     esperas=await db_get("bia_esperas",f"telefono=eq.{s.telefono}&order=created_at.desc&limit=1")
     if esperas:
@@ -1955,7 +1967,7 @@ async def test(req:Request):
     return{"trace_id":s.trace_id,"dominio":s.dominio,"dominio_fuente":s.dominio_fuente,"confianza":s.confianza,"respuesta":s.respuesta,"errores":s.errores,"duracion_ms":s.duracion_ms}
 
 @app.get("/health")
-async def health():return{"status":"ok","service":"bia-v3","version":"7.6.1-cmdfirst"}
+async def health():return{"status":"ok","service":"bia-v3","version":"7.6.2-cmdfix"}
 
 if __name__=="__main__":
     import uvicorn;uvicorn.run(app,host="0.0.0.0",port=PORT)
