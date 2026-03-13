@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BIA v7.0 — Fichajes Blindados + Parser v2 + Personalidad + Memoria + Facturas"""
+"""BIA v7.5 — Fichajes Blindados + Parser v2 + Personalidad + Memoria + Facturas"""
 import os, re, json, time, uuid, logging, hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, date
@@ -1634,7 +1634,7 @@ async def test(req:Request):
     return{"trace_id":s.trace_id,"dominio":s.dominio,"dominio_fuente":s.dominio_fuente,"confianza":s.confianza,"respuesta":s.respuesta,"errores":s.errores,"duracion_ms":s.duracion_ms}
 
 @app.get("/health")
-async def health():return{"status":"ok","service":"bia-v3","version":"7.1-hardened"}
+async def health():return{"status":"ok","service":"bia-v3","version":"7.5-intents"}
 
 if __name__=="__main__":
     import uvicorn;uvicorn.run(app,host="0.0.0.0",port=PORT)
