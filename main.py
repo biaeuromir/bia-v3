@@ -1544,7 +1544,7 @@ async def procesar(s):
                     nm=r.get("empleado_nombre","?");por_emp[nm]=por_emp.get(nm,0)+float(r.get("horas_decimal",0) or 0)
                 # Get cargos
                 emps_data=await db_get("empleados","estado=eq.Activo&select=nombre,cargo")
-                cargo_map={e.get("nombre","").lower():e.get("cargo","?") for e in emps_data}
+                cargo_map={(e.get("nombre","") or "").lower():(e.get("cargo","") or "Sin cargo") for e in emps_data}
                 por_cargo={}
                 for nm,h in por_emp.items():
                     cargo=cargo_map.get(nm.lower(),"Otro")
@@ -1967,7 +1967,7 @@ async def test(req:Request):
     return{"trace_id":s.trace_id,"dominio":s.dominio,"dominio_fuente":s.dominio_fuente,"confianza":s.confianza,"respuesta":s.respuesta,"errores":s.errores,"duracion_ms":s.duracion_ms}
 
 @app.get("/health")
-async def health():return{"status":"ok","service":"bia-v3","version":"7.6.2-cmdfix"}
+async def health():return{"status":"ok","service":"bia-v3","version":"7.6.3"}
 
 if __name__=="__main__":
     import uvicorn;uvicorn.run(app,host="0.0.0.0",port=PORT)
