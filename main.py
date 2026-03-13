@@ -1206,20 +1206,30 @@ async def procesar(s):
     s.mensaje_normalizado=normalizar_horas(s.mensaje_original.strip())
     rol_actual=int(s.empleado.get("rol_id",s.empleado.get("rol",99)) or 99)
     log.info(f"[{s.trace_id}] \U0001f4e9 {s.empleado.get('nombre','?')}: {s.mensaje_original[:80]}")
-    # ═══ AYUDA — absolute first check, before esperas ═══
+    # ═══ MENU SYSTEM — role-based, bilingual ═══
     _cmd = s.mensaje_original.strip()
-    if _cmd == "AYUDA":
-        s.dominio="AYUDA";s.dominio_fuente="cmd"
-        s.respuesta="\U0001f6e0 *COMANDOS ADMIN (MAYUSCULAS EXACTAS):*\n\n\U0001f3d7 *ALTA OBRA* — Crear obra (4 pasos)\n\U0001f512 *CERRAR OBRA* — Cerrar obra\n\U0001f504 *REABRIR OBRA* — Reabrir obra\n\U0001f477 *ALTA EMPLEADO* — Alta empleado (6 pasos)\n\u274c *BAJA EMPLEADO* — Baja empleado\n\U0001f552 *HORAS OBRA* — Horas por obra/categoria\n\U0001f4b8 *GASTOS EMPLEADO* — Gastos por empleado\n\U0001f4b0 *GASTOS OBRA* — Coste total obra\n\U0001f4ca *CALCULAR NOMINA* — Calcular nomina\n\U0001f4c4 *ENVIAR NOMINA* — Enviar PDF nomina\n\U0001f4b6 *ANTICIPO* — Consultar anticipos\n\U0001f4b3 *REGISTRAR ANTICIPO* — Registrar anticipo\n\u2753 *AYUDA* — Ver esta lista\n\n\U0001f4a1 _Escribe el comando EXACTO en mayusculas_"
-        s.duracion_ms=int((time.time()-t0)*1000)
-        if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
-        await guardar_ejecucion(s);return s
-    if _cmd.lower() in ("ayuda","help","ajutor"):
-        s.dominio="AYUDA_EMP";s.dominio_fuente="cmd"
+    _cmd_low = _cmd.lower()
+    if _cmd_low in ("ayuda","help","menu","ajutor"):
         _rol=int(s.empleado.get("rol_id",99) or 99)
-        _txt="\U0001f916 *Que puedo hacer por ti:*\n\n\U0001f552 *Fichajes*\n  Manda tus horas: _9-17_ o _de 8 a 18_\n  _he fichado hoy?_\n  _cuantas horas llevo?_\n\n\U0001f9fe *Facturas*\n  Manda foto de factura o ticket\n\n\U0001f4b6 *Nominas*\n  _enviame mi nomina de febrero_\n\n\U0001f4cb *Info*\n  _en que obra estoy?_ | _mis anticipos_ | _cuanto he ganado?_\n\n\U0001f3a4 *Audio* — Manda nota de voz"
-        if _rol<=2: _txt+="\n\n\U0001f465 *Equipo*\n  _quien ficho hoy?_ | _resumen de hoy_\n  _gastos de la obra_ | _horas en la obra_"
-        s.respuesta=_txt
+        _idioma=s.empleado.get("idioma","es") or "es"
+        if _cmd_low == "ajutor": _idioma = "ro"
+        _nombre=s.empleado.get("apodo") or s.empleado.get("nombre","")
+        s.dominio="MENU";s.dominio_fuente="cmd"
+        if _rol == 1:
+            s.respuesta=f"\U0001f6e0 *COMANDOS ADMIN (MAYUSCULAS EXACTAS):*\n\n\U0001f3d7 *ALTA OBRA*\n\U0001f512 *CERRAR OBRA*\n\U0001f504 *REABRIR OBRA*\n\U0001f477 *ALTA EMPLEADO*\n\u274c *BAJA EMPLEADO*\n\U0001f552 *HORAS OBRA*\n\U0001f4b8 *GASTOS EMPLEADO*\n\U0001f4b0 *GASTOS OBRA*\n\U0001f4ca *CALCULAR NOMINA*\n\U0001f4c4 *ENVIAR NOMINA*\n\U0001f4b6 *ANTICIPO*\n\U0001f4b3 *REGISTRAR ANTICIPO*\n\u2753 *AYUDA*"
+        elif _rol == 2:
+            if _idioma == "ro":
+                s.respuesta=f"\U0001f477 Buna {_nombre}! Comenzi encargado:\n\n\U0001f552 *HORAS OBRA*\n\U0001f4b0 *GASTOS OBRA*\n\U0001f4b8 *GASTOS EMPLEADO*\n\U0001f504 *REABRIR OBRA*\n\U0001f512 *CERRAR OBRA*\n\n\U0001f4a1 _Scrie comanda EXACTA cu majuscule_\n\nSau scrie *menu* pentru optiuni personale"
+            else:
+                s.respuesta=f"\U0001f477 Hola {_nombre}! Comandos encargado:\n\n\U0001f552 *HORAS OBRA*\n\U0001f4b0 *GASTOS OBRA*\n\U0001f4b8 *GASTOS EMPLEADO*\n\U0001f504 *REABRIR OBRA*\n\U0001f512 *CERRAR OBRA*\n\n\U0001f4a1 _Escribe el comando EXACTO en mayusculas_\n\nO escribe *menu* para opciones personales"
+        else:
+            # Employee menu — numeric
+            if _idioma == "ro":
+                s.respuesta=f"\U0001f916 Buna {_nombre}! Ce ai nevoie?\n\n1\ufe0f\u20e3 Pontaj\n2\ufe0f\u20e3 Calculeaza salariu\n3\ufe0f\u20e3 Cat castig\n4\ufe0f\u20e3 Ore lucrate\n5\ufe0f\u20e3 Trimite-mi Nomina\n6\ufe0f\u20e3 Avansurile mele\n7\ufe0f\u20e3 Date firma\n8\ufe0f\u20e3 Encargado meu\n\nSpune-mi numarul \U0001f60a sau scrie-mi!"
+            else:
+                s.respuesta=f"\U0001f916 Hola {_nombre}! Que necesitas?\n\n1\ufe0f\u20e3 Fichar\n2\ufe0f\u20e3 Calcular nomina\n3\ufe0f\u20e3 Cuanto cobro\n4\ufe0f\u20e3 Horas trabajadas\n5\ufe0f\u20e3 Enviame mi nomina\n6\ufe0f\u20e3 Mis anticipos\n7\ufe0f\u20e3 Datos empresa\n8\ufe0f\u20e3 Mi encargado\n\nDime el numero \U0001f60a o escribeme!"
+            # Create menu espera for number selection
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"menu_emp","dominio":"MENU","contexto":{"idioma":_idioma}})
         s.duracion_ms=int((time.time()-t0)*1000)
         if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
         await guardar_ejecucion(s);return s
@@ -1268,20 +1278,7 @@ async def procesar(s):
                         sheet_data={"spreadsheet_id":(obra.get("spreadsheet_id","") or "").strip(),"obra_nombre":obra["nombre"],"obra_id":obra["id"],"proveedor":prov,"numero_factura":str(factura.get("numero_factura",factura.get("numero",""))),"cif":factura.get("CIF",factura.get("cif","")),"concepto":concepto,"base":factura.get("base_imponible",0),"iva":factura.get("iva_importe",0),"total":tot,"fecha":factura.get("fecha",""),"trimestre":trim,"empleado":s.empleado.get("nombre",""),"empleado_telefono":s.empleado.get("telefono",""),"drive_url":ctx.get("drive_url","")}
                         async with httpx.AsyncClient(timeout=15) as sc:await sc.post(f"{N8N}/webhook/escribir-gasto-sheet",json=sheet_data)
                     except Exception as e:log.error(f"Sheet: {e}")
-                    # Check if more facturas in queue
-                    cola=ctx.get("cola",[])
-                    # Remove the one we just processed (first match)
-                    cola_rest=[c for i,c in enumerate(cola) if i>0] if cola else []
-                    if cola_rest:
-                        next_fact=cola_rest[0]
-                        next_prov=next_fact.get("factura",{}).get("proveedor","?")
-                        next_total=next_fact.get("factura",{}).get("total",0)
-                        await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":{"factura":next_fact["factura"],"obras":ctx.get("obras",[]),"drive_url":next_fact.get("drive_url",""),"cola":cola_rest}})
-                        obras2=await db_get("obras","select=id,nombre,spreadsheet_id&estado=eq.En curso&order=nombre")
-                        obras_txt2="\n".join([f"{i+1}. *{o2['nombre']}*" for i,o2 in enumerate(obras2)])
-                        s.respuesta=f"\u2705 Gasto registrado: {prov} {tot}\u20ac en {obra['nombre']}\n\n\U0001f4cb *Siguiente factura:*\nProveedor: {next_prov}\nTotal: {next_total}\u20ac\n\nA que obra va? \U0001f3d7\n\n{obras_txt2}\n\nDime numero ({len(cola_rest)} mas en cola)"
-                    else:
-                        s.respuesta=f"\u2705 Gasto registrado!\n\nProveedor: {prov}\nTotal: {tot}\u20ac\nObra: {obra['nombre']}\nTrimestre: {trim}\n\nGuardado en BD + Sheet \u2705"
+                    s.respuesta=f"\u2705 Gasto registrado!\n\nProveedor: {prov}\nTotal: {tot}\u20ac\nObra: {obra['nombre']}\nTrimestre: {trim}\n\nGuardado en BD + Sheet \u2705"
                 else:
                     await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":ctx})
                     s.respuesta="Numero no valido. Dime el numero correcto."
@@ -1776,6 +1773,248 @@ async def procesar(s):
             if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
             await guardar_ejecucion(s);return s
         
+        # ═══ MENU EMPLEADO HANDLERS ═══
+        if esp.get("tipo") == "menu_emp":
+            idioma = ctx.get("idioma", "es")
+            try: sel = int(s.mensaje_normalizado.strip())
+            except: sel = 0
+            eid_m = s.empleado.get("id", 0)
+            nombre_m = s.empleado.get("apodo") or s.empleado.get("nombre", "")
+            
+            def _meses_selector(idioma_m):
+                """Generate last 12 months selector"""
+                from datetime import date as d2
+                hoy = d2.today()
+                MNAMES_ES = ["","Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+                MNAMES_RO = ["","Ianuarie","Februarie","Martie","Aprilie","Mai","Iunie","Iulie","August","Septembrie","Octombrie","Noiembrie","Decembrie"]
+                mnames = MNAMES_RO if idioma_m == "ro" else MNAMES_ES
+                meses = []
+                for i in range(12):
+                    m = hoy.month - i
+                    y = hoy.year
+                    if m <= 0: m += 12; y -= 1
+                    meses.append({"num": m, "anio": y, "txt": f"{mnames[m]} {y}"})
+                return meses
+            
+            if sel == 1:
+                # FICHAR — list obras
+                obras = await db_get("obras", "estado=eq.En curso&select=id,nombre&order=nombre")
+                if not obras:
+                    s.respuesta = "No hay obras activas" if idioma != "ro" else "Nu sunt lucrari active"
+                else:
+                    lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i, o in enumerate(obras)])
+                    txt = f"\U0001f3d7 En que obra?\n\n{lista}\n\nDime numero" if idioma != "ro" else f"\U0001f3d7 La ce lucrare?\n\n{lista}\n\nSpune-mi numarul"
+                    await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": eid_m, "tipo": "menu_fichar_obra", "dominio": "MENU", "contexto": {"idioma": idioma, "obras": [{"id": o["id"], "nombre": o["nombre"]} for o in obras]}})
+                    s.respuesta = txt
+            elif sel in (2, 3, 4, 5, 6):
+                # These all need month selector
+                meses = _meses_selector(idioma)
+                lista = "\n".join([f"  {i+1}. {m['txt']}" for i, m in enumerate(meses)])
+                tipo_map = {2: "calc_nomina", 3: "cuanto_cobro", 4: "horas_trab", 5: "enviar_nomina", 6: "anticipos"}
+                titulo_es = {2: "Calcular nomina", 3: "Cuanto cobro", 4: "Horas trabajadas", 5: "Enviar nomina", 6: "Mis anticipos"}
+                titulo_ro = {2: "Calculeaza salariu", 3: "Cat castig", 4: "Ore lucrate", 5: "Trimite Nomina", 6: "Avansuri"}
+                titulo = titulo_ro.get(sel, "") if idioma == "ro" else titulo_es.get(sel, "")
+                txt_ask = "Ce luna?" if idioma == "ro" else "Que mes?"
+                await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": eid_m, "tipo": f"menu_{tipo_map[sel]}", "dominio": "MENU", "contexto": {"idioma": idioma, "meses": meses}})
+                s.respuesta = f"\U0001f4ca *{titulo}*\n\n{txt_ask}\n\n{lista}\n\nDime numero"
+            elif sel == 7:
+                # DATOS EMPRESA — fixed response
+                if idioma == "ro":
+                    s.respuesta = "\U0001f3e2 *Date firma:*\n\n*Obras y Servicios Euromir S.L.*\nCIF: B87075206\nAdresa: Plaza Enrique de Mesa 8\nCP: 28031\nTel: 911272723\nEmail: info@euromir.es"
+                else:
+                    s.respuesta = "\U0001f3e2 *Datos empresa:*\n\n*Obras y Servicios Euromir S.L.*\nCIF: B87075206\nDir: Plaza Enrique de Mesa 8\nCP: 28031\nTel: 911272723\nEmail: info@euromir.es"
+            elif sel == 8:
+                # MI ENCARGADO — list obras
+                obras = await db_get("obras", "estado=eq.En curso&select=id,nombre&order=nombre")
+                if not obras:
+                    s.respuesta = "No hay obras activas"
+                else:
+                    lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i, o in enumerate(obras)])
+                    txt = f"\U0001f477 En que obra?\n\n{lista}" if idioma != "ro" else f"\U0001f477 La ce lucrare?\n\n{lista}"
+                    await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": eid_m, "tipo": "menu_encargado", "dominio": "MENU", "contexto": {"idioma": idioma, "obras": [{"id": o["id"], "nombre": o["nombre"]} for o in obras]}})
+                    s.respuesta = txt
+            else:
+                s.respuesta = "Dime un numero del 1 al 8" if idioma != "ro" else "Spune-mi un numar de la 1 la 8"
+            s.dominio = "MENU"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+            if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+            await guardar_ejecucion(s); return s
+        
+        # MENU FICHAR: obra selected → ask hoy/ayer
+        if esp.get("tipo") == "menu_fichar_obra":
+            idioma = ctx.get("idioma", "es")
+            sel_obra = None
+            obras = ctx.get("obras", [])
+            try:
+                idx = int(s.mensaje_normalizado.strip()) - 1
+                if 0 <= idx < len(obras): sel_obra = obras[idx]
+            except: pass
+            if not sel_obra:
+                await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "menu_fichar_obra", "dominio": "MENU", "contexto": ctx})
+                s.respuesta = "Numero no valido" if idioma != "ro" else "Numar invalid"
+            else:
+                # Check if ayer has fichaje
+                from datetime import timedelta as td_m
+                ayer = (date.today() - td_m(days=1)).isoformat()
+                fich_ayer = await db_get("fichajes_tramos", f"empleado_id=eq.{s.empleado.get('id',0)}&fecha=eq.{ayer}&select=id&limit=1")
+                opciones = "1. Hoy\n2. Ayer" if not fich_ayer else "1. Hoy"
+                if idioma == "ro": opciones = "1. Azi\n2. Ieri" if not fich_ayer else "1. Azi"
+                txt = f"Obra: *{sel_obra['nombre']}*\n\nPara que dia?\n{opciones}" if idioma != "ro" else f"Lucrare: *{sel_obra['nombre']}*\n\nPentru ce zi?\n{opciones}"
+                await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "menu_fichar_dia", "dominio": "MENU", "contexto": {"idioma": idioma, "obra": sel_obra, "tiene_ayer": not bool(fich_ayer)}})
+                s.respuesta = txt
+            s.dominio = "MENU"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+            if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+            await guardar_ejecucion(s); return s
+        
+        # MENU FICHAR: dia selected → ask horas
+        if esp.get("tipo") == "menu_fichar_dia":
+            idioma = ctx.get("idioma", "es")
+            t_sel = s.mensaje_normalizado.strip()
+            fecha_fich = date.today().isoformat()
+            if t_sel in ("2", "ayer", "ieri") and ctx.get("tiene_ayer"):
+                from datetime import timedelta as td_m2
+                fecha_fich = (date.today() - td_m2(days=1)).isoformat()
+            txt = "Dime entrada y salida (ej: *9-18*):" if idioma != "ro" else "Spune-mi intrare si iesire (ex: *9-18*):"
+            await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "menu_fichar_horas", "dominio": "MENU", "contexto": {"idioma": idioma, "obra": ctx.get("obra"), "fecha": fecha_fich}})
+            s.respuesta = txt
+            s.dominio = "MENU"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+            if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+            await guardar_ejecucion(s); return s
+        
+        # MENU FICHAR: horas entered → register via backend
+        if esp.get("tipo") == "menu_fichar_horas":
+            idioma = ctx.get("idioma", "es")
+            obra = ctx.get("obra", {})
+            fecha_fich = ctx.get("fecha", date.today().isoformat())
+            # Parse hours and send to backend
+            msg_norm = normalizar_horas(s.mensaje_normalizado)
+            pf = parse_fichaje(msg_norm)
+            if pf.get("ok") and pf.get("entrada") and pf.get("salida"):
+                msg_backend = f"de {pf['entrada']} a {pf['salida']}"
+                body = {"mensaje": msg_backend, "empleado_id": s.empleado.get("id", 0), "empleado_nombre": s.empleado.get("nombre", ""), "empleado_telefono": s.empleado.get("telefono", ""), "coste_hora": s.empleado.get("coste_hora", 0), "fuera_madrid_hora": 15, "fecha": fecha_fich}
+                try:
+                    async with httpx.AsyncClient(timeout=30) as c:
+                        r = await c.post(f"{PYTHON_URL}/procesar-fichaje", json=body)
+                        d = r.json()
+                    msg_r = d.get("mensaje", d.get("message", str(d)))
+                    if "obra" in msg_r.lower() and "1." in msg_r:
+                        # Backend asking for obra but we already know it — send selection
+                        obras_backend = await db_get("obras", "estado=eq.En curso&select=id,nombre&order=nombre")
+                        obra_idx = next((i for i, o in enumerate(obras_backend) if o["id"] == obra.get("id")), -1)
+                        if obra_idx >= 0:
+                            async with httpx.AsyncClient(timeout=30) as c:
+                                r2 = await c.post(f"{PYTHON_URL}/procesar-fichaje", json={**body, "mensaje": str(obra_idx + 1)})
+                                d2 = r2.json()
+                            msg_r = d2.get("mensaje", d2.get("message", str(d2)))
+                    s.respuesta = msg_r
+                except Exception as e:
+                    s.respuesta = f"Error: {str(e)[:100]}"
+            else:
+                await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "menu_fichar_horas", "dominio": "MENU", "contexto": ctx})
+                s.respuesta = "No entendi. Ej: *9-18* o *8:30-17*" if idioma != "ro" else "Nu am inteles. Ex: *9-18* sau *8:30-17*"
+            s.dominio = "MENU"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+            if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+            await guardar_ejecucion(s); return s
+        
+        # MENU: month-based queries (calc_nomina, cuanto_cobro, horas_trab, enviar_nomina, anticipos)
+        if esp.get("tipo") and esp["tipo"].startswith("menu_") and esp["tipo"] in ("menu_calc_nomina","menu_cuanto_cobro","menu_horas_trab","menu_enviar_nomina","menu_anticipos"):
+            idioma = ctx.get("idioma", "es")
+            meses = ctx.get("meses", [])
+            try:
+                idx = int(s.mensaje_normalizado.strip()) - 1
+                if 0 <= idx < len(meses): mes_sel = meses[idx]
+                else: mes_sel = None
+            except: mes_sel = None
+            if not mes_sel:
+                await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": esp["tipo"], "dominio": "MENU", "contexto": ctx})
+                s.respuesta = "Dime el numero del mes" if idioma != "ro" else "Spune-mi numarul lunii"
+                s.dominio = "MENU"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+                if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+                await guardar_ejecucion(s); return s
+            
+            mes_n = mes_sel["num"]; anio_n = mes_sel["anio"]
+            eid_m = s.empleado.get("id", 0); enm = s.empleado.get("nombre", "")
+            tipo = esp["tipo"]
+            
+            if tipo == "menu_calc_nomina" or tipo == "menu_cuanto_cobro":
+                try:
+                    async with httpx.AsyncClient(timeout=30) as c:
+                        r = await c.post(f"{PYTHON_URL}/calcular-nomina", json={"empleado_nombre": enm, "mes": mes_n, "anio": anio_n})
+                        d = r.json()
+                    s.respuesta = d.get("resumen", "No pude calcular") if d.get("success") else d.get("mensaje", "Error")
+                except Exception as e: s.respuesta = f"Error: {str(e)[:100]}"
+            
+            elif tipo == "menu_horas_trab":
+                f_inicio = f"{anio_n}-{mes_n:02d}-01"
+                if mes_n == 12: f_fin = f"{anio_n+1}-01-01"
+                else: f_fin = f"{anio_n}-{mes_n+1:02d}-01"
+                rows = await db_get("fichajes_tramos", f"empleado_id=eq.{eid_m}&fecha=gte.{f_inicio}&fecha=lt.{f_fin}&select=horas_decimal,obra_nombre")
+                total = round(sum(float(r.get("horas_decimal", 0) or 0) for r in rows), 1)
+                obras_set = set((r.get("obra_nombre") or "?") for r in rows)
+                txt_mes = mes_sel["txt"]
+                if idioma == "ro":
+                    s.respuesta = f"\U0001f552 *Ore lucrate {txt_mes}:* *{total}h* in {len(obras_set)} lucrari"
+                else:
+                    s.respuesta = f"\U0001f552 *Horas trabajadas {txt_mes}:* *{total}h* en {len(obras_set)} obras"
+            
+            elif tipo == "menu_enviar_nomina":
+                MESES_ABR = {1:"ENE",2:"FEB",3:"MAR",4:"ABR",5:"MAY",6:"JUN",7:"JUL",8:"AGO",9:"SEP",10:"OCT",11:"NOV",12:"DIC"}
+                mes_abr = MESES_ABR.get(mes_n, ""); anio_short = str(anio_n)[-2:]
+                docs = await db_get("documentos", f"empleado_id=eq.{eid_m}&tipo_documento=eq.NOMINA&mes=eq.{mes_abr}&anio=eq.{anio_short}&order=created_at.desc&limit=1&select=drive_file_id,nombre_archivo")
+                if not docs:
+                    s.respuesta = f"No encontre nomina de {mes_abr}-{anio_short}" if idioma != "ro" else f"Nu am gasit salariul {mes_abr}-{anio_short}"
+                else:
+                    doc = docs[0]
+                    # DNI verification for employees
+                    _rol_m = int(s.empleado.get("rol_id", 99) or 99)
+                    if _rol_m >= 3:
+                        await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": eid_m, "tipo": "nomina_dni", "dominio": "NOMINA", "contexto": {"datos_nomina": {"empleado_nombre": enm, "mes": mes_n, "anio": anio_n}}})
+                        s.respuesta = "Para enviarte la nomina necesito tu DNI/NIE:" if idioma != "ro" else "Pentru a-ti trimite salariul am nevoie de DNI/NIE:"
+                    else:
+                        ok = await enviar_doc_whatsapp(s.telefono, doc["drive_file_id"], doc.get("nombre_archivo", "nomina.pdf"))
+                        s.respuesta = f"\u2705 Nomina {mes_abr}-{anio_short} enviada!" if ok else "No pude enviar"
+            
+            elif tipo == "menu_anticipos":
+                rows = await db_get("anticipos", f"empleado_id=eq.{eid_m}&mes=eq.{mes_n}&anio=eq.{anio_n}&select=importe,fecha,concepto&order=fecha.desc")
+                if not rows:
+                    s.respuesta = f"No tienes anticipos en {mes_sel['txt']}" if idioma != "ro" else f"Nu ai avansuri in {mes_sel['txt']}"
+                else:
+                    total = round(sum(float(r.get("importe", 0) or 0) for r in rows), 2)
+                    det = "\n".join([f"  \U0001f4b3 {r.get('fecha','?')} — *{r.get('importe',0)}\u20ac*" for r in rows])
+                    s.respuesta = f"\U0001f4b6 *Anticipos {mes_sel['txt']}:*\n\n{det}\n\n*TOTAL: {total}\u20ac*"
+            
+            s.dominio = "MENU"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+            if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+            await guardar_ejecucion(s); return s
+        
+        # MENU ENCARGADO: obra selected → show encargado
+        if esp.get("tipo") == "menu_encargado":
+            idioma = ctx.get("idioma", "es")
+            obras = ctx.get("obras", [])
+            sel_obra = None
+            try:
+                idx = int(s.mensaje_normalizado.strip()) - 1
+                if 0 <= idx < len(obras): sel_obra = obras[idx]
+            except: pass
+            if not sel_obra:
+                s.respuesta = "No encontre esa obra"
+            else:
+                obra_data = await db_get("obras", f"id=eq.{sel_obra['id']}&select=encargado_id")
+                if obra_data and obra_data[0].get("encargado_id"):
+                    enc = await db_get("empleados", f"id=eq.{obra_data[0]['encargado_id']}&select=nombre,telefono")
+                    if enc:
+                        enc_nombre = enc[0].get("nombre", "?"); enc_tel = enc[0].get("telefono", "?")
+                        if idioma == "ro":
+                            s.respuesta = f"\U0001f477 *Encargado de {sel_obra['nombre']}:*\n\n*{enc_nombre}*\nTel: {enc_tel}"
+                        else:
+                            s.respuesta = f"\U0001f477 *Encargado de {sel_obra['nombre']}:*\n\n*{enc_nombre}*\nTel: {enc_tel}"
+                    else:
+                        s.respuesta = "No encontre al encargado"
+                else:
+                    s.respuesta = "Esta obra no tiene encargado asignado"
+            s.dominio = "MENU"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
+            if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
+            await guardar_ejecucion(s); return s
+        
         # Handle confirmar_fichaje espera — user confirming LLM-parsed hours
         if esp.get("tipo")=="confirmar_fichaje" and consume_espera:
             resp_low=s.mensaje_normalizado.lower().strip()
@@ -1920,19 +2159,7 @@ async def webhook(req:Request):
                     prov=factura_data.get("proveedor","?");total=factura_data.get("total",0);fecha=factura_data.get("fecha","?")
                     resp=f"He leido esta factura:\n\nProveedor: {prov}\nFecha: {fecha}\nTotal: {total}EUR\n\nA que obra va? \U0001f3d7\n\n{obras_txt}\n\nDime numero o nombre \U0001f60a"
                     await wa(f"{tel}@s.whatsapp.net",resp)
-                    # Queue: check if existing factura espera, append to queue
-                    existing_esp=await db_get("bia_esperas",f"telefono=eq.{tel}&tipo=eq.factura_obra&order=created_at.desc&limit=1")
-                    if existing_esp:
-                        # Append to existing queue
-                        old_ctx=existing_esp[0].get("contexto",{}) or {}
-                        cola=old_ctx.get("cola",[])
-                        if old_ctx.get("factura"): cola.append({"factura":old_ctx["factura"],"drive_url":old_ctx.get("drive_url","")})
-                        cola.append({"factura":factura_data,"drive_url":drive_url})
-                        async with httpx.AsyncClient(timeout=10) as dc:
-                            await dc.delete(f"{SUPA}/rest/v1/bia_esperas?id=eq.{existing_esp[0]['id']}",headers={"apikey":SK,"Authorization":f"Bearer {SK}"})
-                        await db_post("bia_esperas",{"telefono":tel,"empleado_id":emp.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":{"factura":cola[-1]["factura"],"obras":[o["id"] for o in obras],"drive_url":cola[-1]["drive_url"],"cola":cola}})
-                    else:
-                        await db_post("bia_esperas",{"telefono":tel,"empleado_id":emp.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":{"factura":factura_data,"obras":[o["id"] for o in obras],"drive_url":drive_url,"cola":[{"factura":factura_data,"drive_url":drive_url}]}})
+                    await db_post("bia_esperas",{"telefono":tel,"empleado_id":emp.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":{"factura":factura_data,"obras":[o["id"] for o in obras],"drive_url":drive_url}})
                     await db_post("bia_ejecuciones",{"trace_id":str(uuid.uuid4())[:8],"telefono":tel,"empleado_id":emp.get("id"),"empleado_nombre":emp.get("nombre",""),"input_original":"[imagen]","dominio":"FACTURA","dominio_fuente":"media","estado_final":"ok","respuesta":resp[:500],"duracion_ms":0})
                 else:await wa(f"{tel}@s.whatsapp.net","No pude descargar la imagen \U0001f527")
             except Exception as e:log.error(f"Img: {e}");await wa(f"{tel}@s.whatsapp.net","No pude leer la factura \U0001f527")
@@ -1992,7 +2219,7 @@ async def test(req:Request):
     return{"trace_id":s.trace_id,"dominio":s.dominio,"dominio_fuente":s.dominio_fuente,"confianza":s.confianza,"respuesta":s.respuesta,"errores":s.errores,"duracion_ms":s.duracion_ms}
 
 @app.get("/health")
-async def health():return{"status":"ok","service":"bia-v3","version":"7.6.5-queue"}
+async def health():return{"status":"ok","service":"bia-v3","version":"7.6.4"}
 
 if __name__=="__main__":
     import uvicorn;uvicorn.run(app,host="0.0.0.0",port=PORT)
