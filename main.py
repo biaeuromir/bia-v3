@@ -658,10 +658,10 @@ def detectar(txt,empleado_rol=0,tiene_espera_conf=False,txt_original=""):
     if PS.match(t): return "SALUDO","responder",1.0
     # ═══ COMANDOS EXACTOS EN MAYÚSCULAS (si una letra falla, no ejecuta) ═══
     cmd = txt_original.strip()
-    # AYUDA commands
+    # AYUDA: exact uppercase → admin, lowercase → employee
     if cmd == "AYUDA":
         return "AYUDA","ayuda_admin",1.0
-    if t.strip() in ("ayuda","help","ajutor"):
+    if cmd != "AYUDA" and t.strip() in ("ayuda","help","ajutor"):
         return "AYUDA_EMP","ayuda_emp",1.0
     if cmd == "REABRIR OBRA": return "REABRIR_OBRA","reabrir",1.0
     if cmd == "CERRAR OBRA": return "CERRAR_OBRA","cerrar",1.0
@@ -1142,7 +1142,7 @@ async def ag_ayuda_emp(s):
   \u2022 _cuanto gasto Nistor hoy?_
   \u2022 _horas en la obra esta semana_
 
-\U0001f6e0 Escribe *AYUDA* en mayusculas para ver comandos admin"""
+"""
     return txt
 
 AG={"FICHAJE":ag_fichaje,"OBRA_ALTA":ag_obra_alta,"OBRA_BAJA":ag_obra_baja,"SALUDO":ag_saludo,"OBRAS":ag_obras,"FINANZAS":ag_finanzas,"EMPLEADOS":ag_empleados,"NOMINA":ag_nomina,"DOCUMENTOS":ag_general,"INVENTARIO":ag_general,"GENERAL":ag_general,"AYUDA":ag_ayuda_admin,"AYUDA_EMP":ag_ayuda_emp,"REABRIR_OBRA":ag_reabrir_obra,"CERRAR_OBRA":ag_cerrar_obra_cmd,"ALTA_EMPLEADO":ag_alta_empleado,"BAJA_EMPLEADO":ag_baja_empleado}
