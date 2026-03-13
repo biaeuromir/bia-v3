@@ -1515,7 +1515,7 @@ async def procesar(s):
         if esp.get("tipo")=="cmd_horas_obra_2":
             obra_id=ctx.get("obra_id");obra_nombre=ctx.get("obra_nombre","?")
             t2=s.mensaje_normalizado.strip().lower()
-            from datetime import timedelta as td2
+            from datetime import date as date2, timedelta as td2
             df=f"obra_id=eq.{obra_id}"
             per="toda la obra"
             if t2 in("1","hoy"): df+=f"&fecha=eq.{date.today().isoformat()}";per="hoy"
@@ -1563,7 +1563,7 @@ async def procesar(s):
         if esp.get("tipo")=="cmd_gastos_emp_2":
             eid2=ctx.get("emp_id");enm=ctx.get("emp_nombre","?")
             t2=s.mensaje_normalizado.strip().lower()
-            from datetime import timedelta as td2
+            from datetime import date as date2, timedelta as td2
             hoy=date.today().isoformat()
             if t2 in("1","hoy"): f1,f2,per=f"{hoy}T00:00:00",f"{hoy}T23:59:59","hoy"
             elif t2 in("2","ayer"):
@@ -1955,7 +1955,7 @@ async def test(req:Request):
     return{"trace_id":s.trace_id,"dominio":s.dominio,"dominio_fuente":s.dominio_fuente,"confianza":s.confianza,"respuesta":s.respuesta,"errores":s.errores,"duracion_ms":s.duracion_ms}
 
 @app.get("/health")
-async def health():return{"status":"ok","service":"bia-v3","version":"7.6-commands"}
+async def health():return{"status":"ok","service":"bia-v3","version":"7.6.1-cmdfirst"}
 
 if __name__=="__main__":
     import uvicorn;uvicorn.run(app,host="0.0.0.0",port=PORT)
