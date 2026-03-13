@@ -1268,7 +1268,20 @@ async def procesar(s):
                         sheet_data={"spreadsheet_id":(obra.get("spreadsheet_id","") or "").strip(),"obra_nombre":obra["nombre"],"obra_id":obra["id"],"proveedor":prov,"numero_factura":str(factura.get("numero_factura",factura.get("numero",""))),"cif":factura.get("CIF",factura.get("cif","")),"concepto":concepto,"base":factura.get("base_imponible",0),"iva":factura.get("iva_importe",0),"total":tot,"fecha":factura.get("fecha",""),"trimestre":trim,"empleado":s.empleado.get("nombre",""),"empleado_telefono":s.empleado.get("telefono",""),"drive_url":ctx.get("drive_url","")}
                         async with httpx.AsyncClient(timeout=15) as sc:await sc.post(f"{N8N}/webhook/escribir-gasto-sheet",json=sheet_data)
                     except Exception as e:log.error(f"Sheet: {e}")
-                    s.respuesta=f"\u2705 Gasto registrado!\n\nProveedor: {prov}\nTotal: {tot}\u20ac\nObra: {obra['nombre']}\nTrimestre: {trim}\n\nGuardado en BD + Sheet \u2705"
+                    # Check if more facturas in queue
+                    cola=ctx.get("cola",[])
+                    # Remove the one we just processed (first match)
+                    cola_rest=[c for i,c in enumerate(cola) if i>0] if cola else []
+                    if cola_rest:
+                        next_fact=cola_rest[0]
+                        next_prov=next_fact.get("factura",{}).get("proveedor","?")
+                        next_total=next_fact.get("factura",{}).get("total",0)
+                        await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":{"factura":next_fact["factura"],"obras":ctx.get("obras",[]),"drive_url":next_fact.get("drive_url",""),"cola":cola_rest}})
+                        obras2=await db_get("obras","select=id,nombre,spreadsheet_id&estado=eq.En curso&order=nombre")
+                        obras_txt2="\n".join([f"{i+1}. *{o2['nombre']}*" for i,o2 in enumerate(obras2)])
+                        s.respuesta=f"\u2705 Gasto registrado: {prov} {tot}\u20ac en {obra['nombre']}\n\n\U0001f4cb *Siguiente factura:*\nProveedor: {next_prov}\nTotal: {next_total}\u20ac\n\nA que obra va? \U0001f3d7\n\n{obras_txt2}\n\nDime numero ({len(cola_rest)} mas en cola)"
+                    else:
+                        s.respuesta=f"\u2705 Gasto registrado!\n\nProveedor: {prov}\nTotal: {tot}\u20ac\nObra: {obra['nombre']}\nTrimestre: {trim}\n\nGuardado en BD + Sheet \u2705"
                 else:
                     await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":ctx})
                     s.respuesta="Numero no valido. Dime el numero correcto."
@@ -1907,7 +1920,19 @@ async def webhook(req:Request):
                     prov=factura_data.get("proveedor","?");total=factura_data.get("total",0);fecha=factura_data.get("fecha","?")
                     resp=f"He leido esta factura:\n\nProveedor: {prov}\nFecha: {fecha}\nTotal: {total}EUR\n\nA que obra va? \U0001f3d7\n\n{obras_txt}\n\nDime numero o nombre \U0001f60a"
                     await wa(f"{tel}@s.whatsapp.net",resp)
-                    await db_post("bia_esperas",{"telefono":tel,"empleado_id":emp.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":{"factura":factura_data,"obras":[o["id"] for o in obras],"drive_url":drive_url}})
+                    # Queue: check if existing factura espera, append to queue
+                    existing_esp=await db_get("bia_esperas",f"telefono=eq.{tel}&tipo=eq.factura_obra&order=created_at.desc&limit=1")
+                    if existing_esp:
+                        # Append to existing queue
+                        old_ctx=existing_esp[0].get("contexto",{}) or {}
+                        cola=old_ctx.get("cola",[])
+                        if old_ctx.get("factura"): cola.append({"factura":old_ctx["factura"],"drive_url":old_ctx.get("drive_url","")})
+                        cola.append({"factura":factura_data,"drive_url":drive_url})
+                        async with httpx.AsyncClient(timeout=10) as dc:
+                            await dc.delete(f"{SUPA}/rest/v1/bia_esperas?id=eq.{existing_esp[0]['id']}",headers={"apikey":SK,"Authorization":f"Bearer {SK}"})
+                        await db_post("bia_esperas",{"telefono":tel,"empleado_id":emp.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":{"factura":cola[-1]["factura"],"obras":[o["id"] for o in obras],"drive_url":cola[-1]["drive_url"],"cola":cola}})
+                    else:
+                        await db_post("bia_esperas",{"telefono":tel,"empleado_id":emp.get("id",0),"tipo":"factura_obra","dominio":"FACTURA","contexto":{"factura":factura_data,"obras":[o["id"] for o in obras],"drive_url":drive_url,"cola":[{"factura":factura_data,"drive_url":drive_url}]}})
                     await db_post("bia_ejecuciones",{"trace_id":str(uuid.uuid4())[:8],"telefono":tel,"empleado_id":emp.get("id"),"empleado_nombre":emp.get("nombre",""),"input_original":"[imagen]","dominio":"FACTURA","dominio_fuente":"media","estado_final":"ok","respuesta":resp[:500],"duracion_ms":0})
                 else:await wa(f"{tel}@s.whatsapp.net","No pude descargar la imagen \U0001f527")
             except Exception as e:log.error(f"Img: {e}");await wa(f"{tel}@s.whatsapp.net","No pude leer la factura \U0001f527")
@@ -1967,7 +1992,7 @@ async def test(req:Request):
     return{"trace_id":s.trace_id,"dominio":s.dominio,"dominio_fuente":s.dominio_fuente,"confianza":s.confianza,"respuesta":s.respuesta,"errores":s.errores,"duracion_ms":s.duracion_ms}
 
 @app.get("/health")
-async def health():return{"status":"ok","service":"bia-v3","version":"7.6.4"}
+async def health():return{"status":"ok","service":"bia-v3","version":"7.6.5-queue"}
 
 if __name__=="__main__":
     import uvicorn;uvicorn.run(app,host="0.0.0.0",port=PORT)
