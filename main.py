@@ -48,6 +48,23 @@ async def db_post(t,d):
             return safe_json_response(r,f"db_post:{t}",{"error":"invalid json"}) if r.status_code in(200,201) else {"error":r.text}
     except Exception as e: return {"error":str(e)}
 
+async def db_upsert(t,d,on="telefono"):
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r=await c.post(
+                f"{SUPA}/rest/v1/{t}?on_conflict={on}",
+                headers={
+                    "apikey":SK,
+                    "Authorization":f"Bearer {SK}",
+                    "Content-Type":"application/json",
+                    "Prefer":"resolution=merge-duplicates,return=representation"
+                },
+                json=d
+            )
+            return safe_json_response(r,f"db_upsert:{t}",{"error":"invalid json"}) if r.status_code in(200,201) else {"error":r.text}
+    except Exception as e:
+        return {"error":str(e)}
+
 def safe_json_response(resp,where="",default=None):
     try:
         return resp.json()
@@ -90,6 +107,231 @@ async def cargar_historial(tel,limit=20):
 
 async def guardar_msg(tel,eid,role,content):
     await db_post("bia_chat_history",{"telefono":tel,"empleado_id":eid,"role":role,"content":(content or "")[:1000]})
+
+def _ctx_value(v):
+    if v is None:
+        return None
+    if isinstance(v,str):
+        v=v.strip()
+        return v or None
+    return v
+
+def _ctx_mes_txt(mes,anio=None):
+    try:
+        mes_i=int(mes)
+    except:
+        return _ctx_value(mes)
+    if mes_i<1 or mes_i>12:
+        return None
+    nombre=["","enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"][mes_i]
+    return f"{nombre} {anio}" if anio else nombre
+
+_CTX_MONTHS={
+    "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
+    "julio":7,"agosto":8,"septiembre":9,"setiembre":9,"octubre":10,"noviembre":11,"diciembre":12,
+    "ianuarie":1,"februarie":2,"martie":3,"aprilie":4,"mai":5,"iunie":6,
+    "iulie":7,"august":8,"septembrie":9,"octombrie":10,"noiembrie":11,"decembrie":12
+}
+
+def _ctx_parse_mes(valor,anio_hint=None):
+    valor=_ctx_value(valor)
+    if valor is None:
+        return None,None,None
+    if isinstance(valor,int):
+        return (valor if 1<=valor<=12 else None), anio_hint, _ctx_mes_txt(valor,anio_hint)
+    txt=str(valor).strip().lower()
+    if txt.isdigit():
+        mi=int(txt)
+        return (mi if 1<=mi<=12 else None), anio_hint, _ctx_mes_txt(mi,anio_hint)
+    m=re.match(r"^(\d{1,2})[/-](\d{4})$",txt)
+    if m:
+        mi=int(m.group(1)); ay=int(m.group(2))
+        return (mi if 1<=mi<=12 else None), ay, _ctx_mes_txt(mi,ay)
+    m=re.match(r"^([a-záéíóúñ]+)\s+(\d{4})$",txt,re.I)
+    if m:
+        mi=_CTX_MONTHS.get(m.group(1).lower()); ay=int(m.group(2))
+        return mi, ay, _ctx_mes_txt(mi,ay) if mi else valor
+    mi=_CTX_MONTHS.get(txt)
+    if mi:
+        return mi, anio_hint, _ctx_mes_txt(mi,anio_hint)
+    return None, anio_hint, valor
+
+def _ctx_from_row(row):
+    row=row or {}
+    meta=row.get("metadata") or {}
+    mes_txt=meta.get("mes_txt") or _ctx_mes_txt(row.get("mes"),row.get("anio"))
+    ctx={
+        "empleado_id":row.get("empleado_id"),
+        "tema":row.get("tema"),
+        "subtema":row.get("subtema"),
+        "paso":row.get("paso"),
+        "estado_flujo":row.get("estado_flujo"),
+        "dominio":row.get("dominio"),
+        "obra_id":row.get("obra_id"),
+        "obra":row.get("obra_nombre"),
+        "empleado_objetivo_id":row.get("empleado_objetivo_id"),
+        "empleado":row.get("empleado_objetivo_nombre"),
+        "mes":mes_txt,
+        "anio":row.get("anio"),
+        "fecha":row.get("fecha"),
+        "ultima_pregunta":row.get("ultima_pregunta"),
+        "ultimo_mensaje_user":row.get("ultimo_mensaje_user"),
+        "ultima_respuesta_bia":row.get("ultima_respuesta_bia"),
+        "updated_at":row.get("updated_at")
+    }
+    for k,v in meta.items():
+        if k not in ("mes_txt",) and k not in ctx:
+            ctx[k]=v
+    return {k:v for k,v in ctx.items() if v not in (None,"",{},[])}
+
+async def cargar_contexto_resumido(tel):
+    rows=await db_get("bia_contexto_activo",f"telefono=eq.{tel}&select=telefono,empleado_id,tema,subtema,paso,estado_flujo,dominio,obra_id,obra_nombre,empleado_objetivo_id,empleado_objetivo_nombre,mes,anio,fecha,ultima_pregunta,ultimo_mensaje_user,ultima_respuesta_bia,metadata,updated_at&limit=1")
+    if not rows:
+        return {}
+    return _ctx_from_row(rows[0])
+
+async def guardar_contexto_resumido(tel,eid,**updates):
+    rows=await db_get("bia_contexto_activo",f"telefono=eq.{tel}&select=*&limit=1")
+    row=(rows[0] if rows else {}) or {}
+    meta=dict(row.get("metadata") or {})
+    changed=False
+    payload={
+        "telefono":tel,
+        "empleado_id":eid or row.get("empleado_id"),
+        "tema":row.get("tema"),
+        "subtema":row.get("subtema"),
+        "paso":row.get("paso"),
+        "estado_flujo":row.get("estado_flujo"),
+        "dominio":row.get("dominio"),
+        "obra_id":row.get("obra_id"),
+        "obra_nombre":row.get("obra_nombre"),
+        "empleado_objetivo_id":row.get("empleado_objetivo_id"),
+        "empleado_objetivo_nombre":row.get("empleado_objetivo_nombre"),
+        "mes":row.get("mes"),
+        "anio":row.get("anio"),
+        "fecha":row.get("fecha"),
+        "ultima_pregunta":row.get("ultima_pregunta"),
+        "ultimo_mensaje_user":row.get("ultimo_mensaje_user"),
+        "ultima_respuesta_bia":row.get("ultima_respuesta_bia"),
+        "confianza_contexto":row.get("confianza_contexto") or 1.0,
+        "metadata":meta
+    }
+    alias_map={
+        "obra":"obra_nombre",
+        "empleado":"empleado_objetivo_nombre"
+    }
+    for k,v in updates.items():
+        key=alias_map.get(k,k)
+        vv=_ctx_value(v)
+        if vv is None:
+            continue
+        if key=="mes":
+            mi,ay,mes_txt=_ctx_parse_mes(vv,updates.get("anio") or payload.get("anio"))
+            if mi and payload.get("mes")!=mi:
+                payload["mes"]=mi; changed=True
+            if ay and payload.get("anio")!=ay:
+                payload["anio"]=ay; changed=True
+            if mes_txt and meta.get("mes_txt")!=mes_txt:
+                meta["mes_txt"]=mes_txt; changed=True
+            continue
+        if key in payload:
+            if payload.get(key)!=vv:
+                payload[key]=vv
+                changed=True
+        else:
+            if meta.get(key)!=vv:
+                meta[key]=vv
+                changed=True
+    if not changed:
+        return _ctx_from_row(payload)
+    payload["metadata"]=meta
+    payload["updated_at"]=datetime.now().isoformat(timespec="seconds")
+    await db_upsert("bia_contexto_activo",payload,"telefono")
+    ctx=_ctx_from_row(payload)
+    tema=ctx.get("tema")
+    if tema:
+        await guardar_memoria_hecho(tel,eid,"contexto","ultimo_tema",tema,relevancia=35,fuente="contexto")
+    if ctx.get("obra"):
+        await guardar_memoria_hecho(tel,eid,"referencia","ultima_obra",ctx.get("obra"),relevancia=45,fuente="contexto")
+    if ctx.get("empleado"):
+        await guardar_memoria_hecho(tel,eid,"referencia","ultimo_empleado",ctx.get("empleado"),relevancia=45,fuente="contexto")
+    if ctx.get("mes"):
+        await guardar_memoria_hecho(tel,eid,"referencia","ultimo_mes",ctx.get("mes"),relevancia=35,fuente="contexto")
+    return ctx
+
+async def cargar_memoria_hechos(tel,limit=8):
+    rows=await db_get("bia_memoria_vigente",f"telefono=eq.{tel}&order=relevancia.desc,updated_at.desc&limit={limit}&select=tema,clave,valor,valor_json,relevancia,updated_at")
+    out=[]
+    for row in rows or []:
+        valor=_ctx_value(row.get("valor"))
+        if not valor:
+            vj=row.get("valor_json") or {}
+            valor=", ".join([f"{k}: {v}" for k,v in vj.items()][:3]) if isinstance(vj,dict) else None
+        if valor:
+            out.append({"tema":row.get("tema"),"clave":row.get("clave"),"valor":valor,"relevancia":row.get("relevancia",0),"updated_at":row.get("updated_at")})
+    return out
+
+async def guardar_memoria_hecho(tel,eid,tema,clave,valor=None,valor_json=None,relevancia=50,fuente="bia",vigente=True,caduca_en=None):
+    if not tel or not tema or not clave:
+        return {}
+    payload={
+        "telefono":tel,
+        "empleado_id":eid or None,
+        "tema":tema,
+        "clave":clave,
+        "valor":_ctx_value(valor),
+        "valor_json":valor_json if isinstance(valor_json,dict) else {},
+        "fuente":fuente,
+        "relevancia":relevancia,
+        "vigente":vigente,
+        "caduca_en":caduca_en
+    }
+    return await db_upsert("bia_memoria_hechos",payload,"telefono,tema,clave")
+
+async def cargar_resumenes_dialogo(tel,limit=3):
+    rows=await db_get("bia_resumenes_dialogo",f"telefono=eq.{tel}&order=created_at.desc&limit={limit}&select=tema,resumen,entidades,created_at")
+    return rows or []
+
+async def guardar_resumen_dialogo(tel,eid,resumen,tema="",entidades=None,desde=None,hasta=None,mensajes_cubiertos=1):
+    resumen=(resumen or "").strip()
+    if not tel or not resumen:
+        return {}
+    return await db_post("bia_resumenes_dialogo",{
+        "telefono":tel,
+        "empleado_id":eid or None,
+        "tema":tema or None,
+        "resumen":resumen[:1000],
+        "entidades":entidades if isinstance(entidades,dict) else {},
+        "desde":desde,
+        "hasta":hasta,
+        "mensajes_cubiertos":mensajes_cubiertos
+    })
+
+async def registrar_memoria_turno(s):
+    try:
+        eid=s.empleado.get("id",0)
+        await guardar_contexto_resumido(
+            s.telefono,eid,
+            dominio=s.dominio,
+            ultimo_mensaje_user=s.mensaje_normalizado,
+            ultima_respuesta_bia=s.respuesta
+        )
+        idioma=_ctx_value(s.empleado.get("idioma"))
+        if idioma:
+            await guardar_memoria_hecho(s.telefono,eid,"preferencia","idioma",idioma,relevancia=90,fuente="empleado")
+        tono="directo" if s.empleado.get("notas_bia") else None
+        if tono:
+            await guardar_memoria_hecho(s.telefono,eid,"preferencia","tono",tono,relevancia=60,fuente="empleado")
+        ctx=await cargar_contexto_resumido(s.telefono)
+        entidades={}
+        for k in ("tema","obra","empleado","mes","fecha"):
+            if ctx.get(k):
+                entidades[k]=ctx.get(k)
+        if s.respuesta and s.dominio not in ("SALUDO","GENERAL"):
+            resumen=f"Usuario: {s.mensaje_normalizado[:180]}. Bia: {s.respuesta[:220]}"
+            await guardar_resumen_dialogo(s.telefono,eid,resumen,tema=ctx.get("tema") or s.dominio.lower(),entidades=entidades,hasta=datetime.now().isoformat(timespec='seconds'))
+    except Exception as e:
+        log.error(f"registrar_memoria_turno: {e}")
 
 async def borrar_espera(espera_id):
     try:
@@ -991,6 +1233,7 @@ async def ag_nomina(s):
     rol=int(s.empleado.get("rol_id",s.empleado.get("rol",99)) or 99)
     datos=parsear_nomina(s.mensaje_normalizado,s.empleado.get("nombre",""))
     log.info(f"[{s.trace_id}] Nomina: {datos} rol={rol}")
+    await guardar_contexto_resumido(s.telefono,s.empleado.get("id",0),tema="nomina",empleado=datos.get("empleado_nombre",""),mes=_ctx_mes_txt(datos.get("mes"),datos.get("anio")),paso="consulta")
     
     # Detect if asking for PDF document vs calculation
     quiere_pdf=any(w in texto for w in ["manda","envia","envía","pdf","documento","descarga","dame"])
@@ -1100,8 +1343,15 @@ async def ag_general(s):
     n=s.empleado.get("apodo") or s.empleado.get("nombre","")
     nt2=s.empleado.get("notas_bia","")
     hist=await cargar_historial(s.telefono)
+    ctx=await cargar_contexto_resumido(s.telefono)
+    hechos=await cargar_memoria_hechos(s.telefono,8)
+    resumenes=await cargar_resumenes_dialogo(s.telefono,3)
     h="".join([("Emp: " if m.get("role")=="user" else "Bia: ")+m.get("content","")+"\n" for m in hist[-8:]]) if hist else ""
-    return await gpt(s.mensaje_normalizado,BIA_PERSONA+f"\nHablas con: {n}\nNotas: {nt2}\nHistorial:\n{h}","gpt-4o") or f"Perdona {n}, no te entendi \U0001f914"
+    ctx_txt=", ".join([f"{k}: {v}" for k,v in ctx.items() if k!="updated_at"]) if ctx else "ninguno"
+    hechos_txt="\n".join([f"- {x.get('tema')}/{x.get('clave')}: {x.get('valor')}" for x in hechos]) if hechos else "- sin hechos guardados"
+    res_txt="\n".join([f"- {r.get('tema') or 'tema'}: {r.get('resumen','')}" for r in resumenes]) if resumenes else "- sin resumenes"
+    prompt_sistema=BIA_PERSONA+f"\nHablas con: {n}\nNotas: {nt2}\nContexto activo: {ctx_txt}\nMemoria larga:\n{hechos_txt}\nResumenes recientes:\n{res_txt}\nHistorial:\n{h}\nSi el mensaje encaja con el contexto activo, continua ese tema. Si usa referencias como 'esa obra', 'el de antes' o 'marzo', apóyate primero en el contexto activo y luego en la memoria larga. Si cambia de tema claramente, cambia sin arrastrar el contexto viejo."
+    return await gpt(s.mensaje_normalizado,prompt_sistema,"gpt-4o") or f"Perdona {n}, no te entendi \U0001f914"
 
 async def ag_obra_alta(s):
     await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_nombre","dominio":"OBRA_ALTA","contexto":{}})
@@ -1191,6 +1441,7 @@ async def ag_ayuda_emp(s):
 async def ag_cmd_horas_obra(s):
     obras=await db_get("obras","estado=eq.En curso&select=id,nombre&order=nombre")
     if not obras: return "No hay obras activas"
+    await guardar_contexto_resumido(s.telefono,s.empleado.get("id",0),tema="horas_obra",paso="elegir_obra")
     lista="\n".join([f"  {i+1}. *{o['nombre']}*" for i,o in enumerate(obras)])
     await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_horas_obra_1","dominio":"CMD","contexto":{"obras":[{"id":o["id"],"nombre":o["nombre"]} for o in obras]}})
     return f"\U0001f552 *HORAS OBRA*\n\nQue obra?\n\n{lista}\n\nDime numero o nombre"
@@ -1198,6 +1449,7 @@ async def ag_cmd_horas_obra(s):
 async def ag_cmd_gastos_emp(s):
     emps=await db_get("empleados","estado=eq.Activo&select=id,nombre&order=nombre")
     if not emps: return "No hay empleados activos"
+    await guardar_contexto_resumido(s.telefono,s.empleado.get("id",0),tema="gastos_empleado",paso="elegir_empleado")
     lista="\n".join([f"  {i+1}. *{e['nombre']}*" for i,e in enumerate(emps)])
     await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_gastos_emp_1","dominio":"CMD","contexto":{"emps":[{"id":e["id"],"nombre":e["nombre"]} for e in emps]}})
     return f"\U0001f4b8 *GASTOS EMPLEADO*\n\nQue empleado?\n\n{lista}\n\nDime numero o nombre"
@@ -1205,6 +1457,7 @@ async def ag_cmd_gastos_emp(s):
 async def ag_cmd_gastos_obra(s):
     obras=await db_get("obras","estado=eq.En curso&select=id,nombre&order=nombre")
     if not obras: return "No hay obras activas"
+    await guardar_contexto_resumido(s.telefono,s.empleado.get("id",0),tema="gastos_obra",paso="elegir_obra")
     lista="\n".join([f"  {i+1}. *{o['nombre']}*" for i,o in enumerate(obras)])
     await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_gastos_obra_1","dominio":"CMD","contexto":{"obras":[{"id":o["id"],"nombre":o["nombre"]} for o in obras]}})
     return f"\U0001f4b0 *GASTOS OBRA*\n\nQue obra?\n\n{lista}\n\nDime numero o nombre"
@@ -1574,6 +1827,7 @@ async def procesar(s):
                 s.respuesta="No encontre esa obra. Dime el numero.";s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
                 if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
                 await guardar_ejecucion(s);return s
+            await guardar_contexto_resumido(s.telefono,s.empleado.get("id",0),tema="horas_obra",obra=sel["nombre"],paso="elegir_periodo")
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_horas_obra_2","dominio":"CMD","contexto":{"obra_id":sel["id"],"obra_nombre":sel["nombre"]}})
             s.respuesta=f"Obra: *{sel['nombre']}*\n\nPeriodo?\n  1. Hoy\n  2. Ayer\n  3. Esta semana\n  4. Toda la obra\n\nDime numero"
             s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
@@ -1622,6 +1876,7 @@ async def procesar(s):
                 s.respuesta="No encontre. Dime el numero.";s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
                 if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
                 await guardar_ejecucion(s);return s
+            await guardar_contexto_resumido(s.telefono,s.empleado.get("id",0),tema="gastos_empleado",empleado=sel["nombre"],paso="elegir_periodo")
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_gastos_emp_2","dominio":"CMD","contexto":{"emp_id":sel["id"],"emp_nombre":sel["nombre"]}})
             s.respuesta=f"Empleado: *{sel['nombre']}*\n\nPeriodo?\n  1. Hoy\n  2. Ayer\n  3. Esta semana\n  4. Este mes\n\nDime numero"
             s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
@@ -1660,6 +1915,7 @@ async def procesar(s):
                 s.respuesta="No encontre. Dime el numero.";s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
                 if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
                 await guardar_ejecucion(s);return s
+            await guardar_contexto_resumido(s.telefono,s.empleado.get("id",0),tema="gastos_obra",obra=sel["nombre"],paso="elegir_tipo")
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_gastos_obra_2","dominio":"CMD","contexto":{"obra_id":sel["id"],"obra_nombre":sel["nombre"]}})
             s.respuesta=f"Obra: *{sel['nombre']}*\n\nQue quieres ver?\n  1. Solo facturas\n  2. Solo mano de obra\n  3. Todo (facturas + mano de obra)\n\nDime numero"
             s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
@@ -1689,6 +1945,7 @@ async def procesar(s):
                 s.respuesta="No encontre. Dime el numero.";s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
                 if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
                 await guardar_ejecucion(s);return s
+            await guardar_contexto_resumido(s.telefono,s.empleado.get("id",0),tema="nomina",empleado=sel["nombre"],paso="elegir_mes")
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_calc_nom_2","dominio":"CMD","contexto":{"emp_id":sel["id"],"emp_nombre":sel["nombre"]}})
             s.respuesta=f"Empleado: *{sel['nombre']}*\n\nQue mes? (ej: 1=enero, 2=febrero, 3=marzo...)"
             s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
@@ -1701,6 +1958,7 @@ async def procesar(s):
             try: mes=int(s.mensaje_normalizado.strip())
             except: mes=datetime.now().month
             anio=datetime.now().year
+            await guardar_contexto_resumido(s.telefono,s.empleado.get("id",0),tema="nomina",empleado=enm,mes=_ctx_mes_txt(mes,anio),paso="resultado")
             try:
                 async with httpx.AsyncClient(timeout=30) as nc:
                     nr=await nc.post(f"{PYTHON_URL}/calcular-nomina",json={"empleado_nombre":enm,"mes":mes,"anio":anio})
@@ -1910,12 +2168,15 @@ async def procesar(s):
                 if not obras:
                     s.respuesta = "No hay obras activas" if idioma != "ro" else "Nu sunt lucrari active"
                 else:
+                    await guardar_contexto_resumido(s.telefono,eid_m,tema="fichaje",paso="elegir_obra")
                     lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i, o in enumerate(obras)])
                     txt = f"\U0001f3d7 En que obra?\n\n{lista}\n\nDime numero" if idioma != "ro" else f"\U0001f3d7 La ce lucrare?\n\n{lista}\n\nSpune-mi numarul"
                     await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": eid_m, "tipo": "menu_fichar_obra", "dominio": "MENU", "contexto": {"idioma": idioma, "obras": [{"id": o["id"], "nombre": o["nombre"]} for o in obras]}})
                     s.respuesta = txt
             elif sel in (2, 3, 4, 5, 6):
                 # These all need month selector
+                tema_map = {2: "nomina", 3: "cuanto_cobro", 4: "horas_trabajadas", 5: "enviar_nomina", 6: "anticipos"}
+                await guardar_contexto_resumido(s.telefono,eid_m,tema=tema_map.get(sel,"consulta"),paso="elegir_mes")
                 meses = _meses_selector(idioma)
                 lista = "\n".join([f"  {i+1}. {m['txt']}" for i, m in enumerate(meses)])
                 tipo_map = {2: "calc_nomina", 3: "cuanto_cobro", 4: "horas_trab", 5: "enviar_nomina", 6: "anticipos"}
@@ -1937,6 +2198,7 @@ async def procesar(s):
                 if not obras:
                     s.respuesta = "No hay obras activas"
                 else:
+                    await guardar_contexto_resumido(s.telefono,eid_m,tema="encargado",paso="elegir_obra")
                     lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i, o in enumerate(obras)])
                     txt = f"\U0001f477 En que obra?\n\n{lista}" if idioma != "ro" else f"\U0001f477 La ce lucrare?\n\n{lista}"
                     await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": eid_m, "tipo": "menu_encargado", "dominio": "MENU", "contexto": {"idioma": idioma, "obras": [{"id": o["id"], "nombre": o["nombre"]} for o in obras]}})
@@ -1960,6 +2222,7 @@ async def procesar(s):
                 await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "menu_fichar_obra", "dominio": "MENU", "contexto": ctx})
                 s.respuesta = "Numero no valido" if idioma != "ro" else "Numar invalid"
             else:
+                await guardar_contexto_resumido(s.telefono,s.empleado.get("id",0),tema="fichaje",obra=sel_obra["nombre"],paso="elegir_dia")
                 # Check if ayer has fichaje
                 from datetime import timedelta as td_m
                 ayer = (date.today() - td_m(days=1)).isoformat()
@@ -1981,6 +2244,7 @@ async def procesar(s):
             if t_sel in ("2", "ayer", "ieri") and ctx.get("tiene_ayer"):
                 from datetime import timedelta as td_m2
                 fecha_fich = (date.today() - td_m2(days=1)).isoformat()
+            await guardar_contexto_resumido(s.telefono,s.empleado.get("id",0),tema="fichaje",obra=(ctx.get("obra") or {}).get("nombre",""),paso="decir_horas",fecha=fecha_fich)
             txt = "Dime entrada y salida (ej: *9-18*):" if idioma != "ro" else "Spune-mi intrare si iesire (ex: *9-18*):"
             await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "menu_fichar_horas", "dominio": "MENU", "contexto": {"idioma": idioma, "obra": ctx.get("obra"), "fecha": fecha_fich}})
             s.respuesta = txt
@@ -2045,6 +2309,8 @@ async def procesar(s):
             mes_n = mes_sel["num"]; anio_n = mes_sel["anio"]
             eid_m = s.empleado.get("id", 0); enm = s.empleado.get("nombre", "")
             tipo = esp["tipo"]
+            tema_map = {"menu_calc_nomina":"nomina","menu_cuanto_cobro":"cuanto_cobro","menu_horas_trab":"horas_trabajadas","menu_enviar_nomina":"enviar_nomina","menu_anticipos":"anticipos"}
+            await guardar_contexto_resumido(s.telefono,eid_m,tema=tema_map.get(tipo,"consulta"),empleado=enm,mes=mes_sel["txt"],paso="resultado")
             
             if tipo == "menu_calc_nomina" or tipo == "menu_cuanto_cobro":
                 try:
@@ -2207,6 +2473,8 @@ async def procesar(s):
     s.timer_end("agente");s.duracion_ms=int((time.time()-t0)*1000)
     log.info(f"[{s.trace_id}] \u2705 {s.dominio} {s.duracion_ms}ms")
     if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+    if s.respuesta and not s.errores:
+        await registrar_memoria_turno(s)
     await guardar_ejecucion(s);return s
 
 # ══════════════ WEBHOOK ══════════════
