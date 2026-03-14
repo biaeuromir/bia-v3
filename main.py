@@ -310,6 +310,28 @@ def es_followup_empleado_ctx(txt,ctx):
     variantes={emp,emp_first,f"de {emp}",f"de {emp_first}",f"y {emp_first}",f"y {emp}"}
     return t in variantes
 
+_RGX_FOLLOWUP_CORTO=re.compile(r'^(y\s+.+|de que\??|de qué\??|como\??|cómo\??|como lo sabes\??|cómo lo sabes\??|de donde\??|de dónde\??|221[,.]?\d*\s+de que\??|inactivas\??|y inactivas\??)$',re.I)
+_RGX_META_CONSULTA=re.compile(r'(de donde sabes|de dónde sabes|como sabes|cómo sabes|por que sabes|por qué sabes|de que hablas|de qué hablas|que quieres decir|qué quieres decir)',re.I)
+_RGX_AYUDA_TEMA=re.compile(r'(que sabes hacer|qué sabes hacer|ayudame|ayúdame|comandos|ayuda)',re.I)
+
+def es_followup_corto(txt):
+    t=(txt or "").strip()
+    if not t:
+        return False
+    if len(t) <= 18 and ("?" in t or t.lower().startswith(("y ","de ","como","cómo","que ","qué "))):
+        return True
+    return bool(_RGX_FOLLOWUP_CORTO.match(t))
+
+def tema_general_sugerido(txt,ctx_anterior):
+    t=(txt or "").strip()
+    if es_cortesia_simple(t):
+        return None
+    if _RGX_AYUDA_TEMA.search(t):
+        return "ayuda"
+    if es_followup_corto(t) and (ctx_anterior or {}).get("tema"):
+        return ctx_anterior.get("tema")
+    return "general"
+
 async def cargar_contexto_resumido(tel):
     rows=await db_get("bia_contexto_activo",f"telefono=eq.{tel}&select=telefono,empleado_id,tema,subtema,paso,estado_flujo,dominio,obra_id,obra_nombre,empleado_objetivo_id,empleado_objetivo_nombre,mes,anio,fecha,ultima_pregunta,ultimo_mensaje_user,ultima_respuesta_bia,metadata,updated_at&limit=1")
     if not rows:
@@ -427,17 +449,42 @@ async def guardar_resumen_dialogo(tel,eid,resumen,tema="",entidades=None,desde=N
         "mensajes_cubiertos":mensajes_cubiertos
     })
 
+async def cargar_ultimo_dominio_util(tel):
+    rows=await db_get("bia_ejecuciones",f"telefono=eq.{tel}&order=created_at.desc&limit=8&select=dominio,accion,input_normalizado")
+    for row in rows or []:
+        dom=(row.get("dominio") or "").upper()
+        acc=(row.get("accion") or "").lower()
+        if dom in ("SALUDO","MENU","GENERAL","AMBIGUO",""):
+            continue
+        if dom=="INTENT":
+            if acc in ("obras_activas","empleados_obra","empleados_en_obra"):
+                return "OBRAS"
+            if acc in ("gastos_empleado","gastos_obra","coste_obra","pagos_pendientes"):
+                return "FINANZAS"
+            if acc in ("lista_empleados","empleados_totales"):
+                return "EMPLEADOS"
+            if acc.startswith("horas_"):
+                return "FICHAJE"
+            continue
+        return dom
+    return None
+
 async def registrar_memoria_turno(s):
     try:
         eid=s.empleado.get("id",0)
         es_cortesia=es_cortesia_simple(s.mensaje_normalizado)
         ctx_antes=await cargar_contexto_resumido(s.telefono)
-        await guardar_contexto_resumido(
-            s.telefono,eid,
-            dominio=s.dominio,
-            ultimo_mensaje_user=s.mensaje_normalizado,
-            ultima_respuesta_bia=s.respuesta
-        )
+        updates={
+            "dominio":s.dominio,
+            "ultimo_mensaje_user":s.mensaje_normalizado,
+            "ultima_respuesta_bia":s.respuesta
+        }
+        if s.dominio in ("GENERAL","AYUDA","AYUDA_EMP"):
+            tema_general=tema_general_sugerido(s.mensaje_normalizado,ctx_antes)
+            if tema_general:
+                updates["tema"]=tema_general
+                updates["paso"]="consulta"
+        await guardar_contexto_resumido(s.telefono,eid,**updates)
         idioma=_ctx_value(s.empleado.get("idioma"))
         if idioma:
             await guardar_memoria_hecho(s.telefono,eid,"preferencia","idioma",idioma,relevancia=90,fuente="empleado")
@@ -1086,6 +1133,7 @@ def detectar(txt,empleado_rol=0,tiene_espera_conf=False,txt_original=""):
     # Normal obra detection (lowercase)
     if re.search(r'nueva obra|registra(r|me)?\s*obra|abrir obra|alta obra|dar de alta obra',t): return "OBRA_ALTA","crear",0.95
     if re.search(r'cerrar obra|baja obra|dar de baja',t): return "OBRA_BAJA","cerrar",0.9
+    if _RGX_META_CONSULTA.search(t): return "GENERAL","explicar",0.9
     if re.search(r'(que me puedes decir de|que sabes de|informacion de|información de|quien es|quién es)\s+[a-záéíóúñ]+',t): return "EMPLEADOS","consultar",0.88
     if re.search(r'^de\s+[a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?\s+que me puedes decir',t): return "EMPLEADOS","consultar",0.88
     if re.search(r'n[oó]mina|sueldo|salario|cu[aá]nto (le )?debo|pagar a|calcul[ae]|env[ií]a(me)?\\s.*(n[oó]mina|documento)',t): return "NOMINA","calcular",0.95
@@ -2632,6 +2680,9 @@ async def procesar(s):
         s.timer_end("intent")
     
     ctx_activo=await cargar_contexto_resumido(s.telefono)
+    dom_followup=None
+    if es_followup_corto(s.mensaje_normalizado):
+        dom_followup=await cargar_ultimo_dominio_util(s.telefono)
     # Detector (with confirmation protection)
     # Re-check esperas for confirmation context (previous espera was consumed, check if new one exists)
     conf_esperas=await db_get("bia_esperas",f"telefono=eq.{s.telefono}&dominio=eq.FICHAJE&order=created_at.desc&limit=1&select=tipo,dominio")
@@ -2643,14 +2694,19 @@ async def procesar(s):
         s.dominio,s.accion,s.confianza,s.dominio_fuente=dom,acc,conf,"regex"
         log.info(f"[{s.trace_id}] \U0001f3af Regex: {dom}")
     else:
-        s.timer_start("clasificador");dom,conf=await clasificar(s.mensaje_normalizado);s.timer_end("clasificador")
-        fuente_dom="gpt"
-        if dom in ("GENERAL","OBRAS","FINANZAS") and es_followup_empleado_ctx(s.mensaje_normalizado,ctx_activo):
-            dom,conf="EMPLEADOS",0.93
-            fuente_dom="followup_empleado"
-            log.info(f"[{s.trace_id}] \U0001f477 Follow-up empleado: {s.mensaje_normalizado}")
-        s.dominio,s.confianza,s.dominio_fuente=dom,conf,fuente_dom
-        log.info(f"[{s.trace_id}] \U0001f916 GPT: {dom} ({conf})")
+        if dom_followup in ("OBRAS","FINANZAS","NOMINA","EMPLEADOS","FICHAJE"):
+            dom,conf=dom_followup,0.92
+            s.dominio,s.confianza,s.dominio_fuente=dom,conf,"followup_ctx"
+            log.info(f"[{s.trace_id}] \U0001f501 Follow-up contexto: {dom}")
+        else:
+            s.timer_start("clasificador");dom,conf=await clasificar(s.mensaje_normalizado);s.timer_end("clasificador")
+            fuente_dom="gpt"
+            if dom in ("GENERAL","OBRAS","FINANZAS") and es_followup_empleado_ctx(s.mensaje_normalizado,ctx_activo):
+                dom,conf="EMPLEADOS",0.93
+                fuente_dom="followup_empleado"
+                log.info(f"[{s.trace_id}] \U0001f477 Follow-up empleado: {s.mensaje_normalizado}")
+            s.dominio,s.confianza,s.dominio_fuente=dom,conf,fuente_dom
+            log.info(f"[{s.trace_id}] \U0001f916 GPT: {dom} ({conf})")
     if not s.empleado.get("id"):s.add_error("Sin empleado",False);s.respuesta="No te identifique.";s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
     s.timer_start("agente")
     try:
