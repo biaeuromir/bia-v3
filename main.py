@@ -184,6 +184,43 @@ def _ctx_from_row(row):
             ctx[k]=v
     return {k:v for k,v in ctx.items() if v not in (None,"",{},[])}
 
+def _tema_base_desde_dominio(dominio):
+    dom=(dominio or "").upper()
+    base={
+        "FICHAJE":"fichaje",
+        "NOMINA":"nomina",
+        "FINANZAS":"finanzas",
+        "OBRAS":"obras",
+        "EMPLEADOS":"empleados",
+        "FACTURA":"factura",
+        "OBRA_ALTA":"obra_alta",
+        "OBRA_BAJA":"obra_baja",
+        "VACACIONES":"ausencias",
+        "AUSENCIAS":"ausencias"
+    }
+    return base.get(dom)
+
+def _tema_compatible_con_dominio(tema,dominio):
+    if not tema or not dominio:
+        return True
+    dom=(dominio or "").upper()
+    if dom in ("GENERAL","SALUDO","MENU","INTENT","AMBIGUO"):
+        return True
+    tema_l=str(tema).lower()
+    allowed={
+        "FICHAJE":{"fichaje","horas_obra"},
+        "NOMINA":{"nomina","anticipo"},
+        "FINANZAS":{"finanzas","gastos_obra","gastos_empleado","coste_obra","anticipo"},
+        "OBRAS":{"obras","obra_alta","obra_baja","reabrir_obra","encargado"},
+        "EMPLEADOS":{"empleados","encargado"},
+        "FACTURA":{"factura","gastos_obra"},
+        "VACACIONES":{"ausencias"},
+        "AUSENCIAS":{"ausencias"}
+    }.get(dom)
+    if not allowed:
+        return True
+    return tema_l in allowed
+
 async def cargar_contexto_resumido(tel):
     rows=await db_get("bia_contexto_activo",f"telefono=eq.{tel}&select=telefono,empleado_id,tema,subtema,paso,estado_flujo,dominio,obra_id,obra_nombre,empleado_objetivo_id,empleado_objetivo_nombre,mes,anio,fecha,ultima_pregunta,ultimo_mensaje_user,ultima_respuesta_bia,metadata,updated_at&limit=1")
     if not rows:
@@ -247,17 +284,7 @@ async def guardar_contexto_resumido(tel,eid,**updates):
     payload["metadata"]=meta
     payload["updated_at"]=datetime.now().isoformat(timespec="seconds")
     await db_upsert("bia_contexto_activo",payload,"telefono")
-    ctx=_ctx_from_row(payload)
-    tema=ctx.get("tema")
-    if tema:
-        await guardar_memoria_hecho(tel,eid,"contexto","ultimo_tema",tema,relevancia=35,fuente="contexto")
-    if ctx.get("obra"):
-        await guardar_memoria_hecho(tel,eid,"referencia","ultima_obra",ctx.get("obra"),relevancia=45,fuente="contexto")
-    if ctx.get("empleado"):
-        await guardar_memoria_hecho(tel,eid,"referencia","ultimo_empleado",ctx.get("empleado"),relevancia=45,fuente="contexto")
-    if ctx.get("mes"):
-        await guardar_memoria_hecho(tel,eid,"referencia","ultimo_mes",ctx.get("mes"),relevancia=35,fuente="contexto")
-    return ctx
+    return _ctx_from_row(payload)
 
 async def cargar_memoria_hechos(tel,limit=8):
     rows=await db_get("bia_memoria_vigente",f"telefono=eq.{tel}&order=relevancia.desc,updated_at.desc&limit={limit}&select=tema,clave,valor,valor_json,relevancia,updated_at")
@@ -310,6 +337,7 @@ async def guardar_resumen_dialogo(tel,eid,resumen,tema="",entidades=None,desde=N
 async def registrar_memoria_turno(s):
     try:
         eid=s.empleado.get("id",0)
+        ctx_antes=await cargar_contexto_resumido(s.telefono)
         await guardar_contexto_resumido(
             s.telefono,eid,
             dominio=s.dominio,
@@ -323,13 +351,29 @@ async def registrar_memoria_turno(s):
         if tono:
             await guardar_memoria_hecho(s.telefono,eid,"preferencia","tono",tono,relevancia=60,fuente="empleado")
         ctx=await cargar_contexto_resumido(s.telefono)
+        tema_ctx=ctx.get("tema")
+        tema_mem=tema_ctx
+        coherente=_tema_compatible_con_dominio(tema_ctx,s.dominio)
+        if not coherente:
+            tema_mem=_tema_base_desde_dominio(s.dominio) or tema_ctx
         entidades={}
-        for k in ("tema","obra","empleado","mes","fecha"):
-            if ctx.get(k):
-                entidades[k]=ctx.get(k)
+        if tema_mem:
+            await guardar_memoria_hecho(s.telefono,eid,"contexto","ultimo_tema",tema_mem,relevancia=35,fuente="contexto")
+        if coherente:
+            for k in ("obra","empleado","mes","fecha"):
+                if ctx.get(k):
+                    entidades[k]=ctx.get(k)
+            if ctx.get("obra"):
+                await guardar_memoria_hecho(s.telefono,eid,"referencia","ultima_obra",ctx.get("obra"),relevancia=45,fuente="contexto")
+            if ctx.get("empleado"):
+                await guardar_memoria_hecho(s.telefono,eid,"referencia","ultimo_empleado",ctx.get("empleado"),relevancia=45,fuente="contexto")
+            if ctx.get("mes"):
+                await guardar_memoria_hecho(s.telefono,eid,"referencia","ultimo_mes",ctx.get("mes"),relevancia=35,fuente="contexto")
+        elif ctx_antes.get("tema") and ctx_antes.get("tema")!=tema_mem:
+            log.info(f"[{s.trace_id}] memoria conservadora: no arrastro entidades de {ctx_antes.get('tema')} a {s.dominio}")
         if s.respuesta and s.dominio not in ("SALUDO","GENERAL"):
             resumen=f"Usuario: {s.mensaje_normalizado[:180]}. Bia: {s.respuesta[:220]}"
-            await guardar_resumen_dialogo(s.telefono,eid,resumen,tema=ctx.get("tema") or s.dominio.lower(),entidades=entidades,hasta=datetime.now().isoformat(timespec='seconds'))
+            await guardar_resumen_dialogo(s.telefono,eid,resumen,tema=tema_mem or s.dominio.lower(),entidades=entidades,hasta=datetime.now().isoformat(timespec='seconds'))
     except Exception as e:
         log.error(f"registrar_memoria_turno: {e}")
 
