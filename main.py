@@ -21,6 +21,7 @@ LLM_CONF_MEDIUM=0.50  # 0.50-0.79: ask clarification
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"),format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 log=logging.getLogger("bia-v3")
 app=FastAPI(title="BIA v7",version="7.1")
+ESPERA_TTL_MINUTES=20
 
 @dataclass
 class BiaState:
@@ -290,6 +291,25 @@ def quitar_saludo_repetido(txt):
     t=t.lstrip()
     return t or txt.strip()
 
+def _norm_txt(s):
+    import unicodedata
+    s=''.join(c for c in unicodedata.normalize('NFD',str(s or "")) if unicodedata.category(c)!='Mn')
+    return re.sub(r'[^a-z0-9\s]',' ',s.lower()).strip()
+
+def es_followup_empleado_ctx(txt,ctx):
+    emp=_norm_txt((ctx or {}).get("empleado",""))
+    if not emp:
+        return False
+    t=_norm_txt(txt)
+    if not t or len(t)>40:
+        return False
+    emp_tokens=[x for x in emp.split() if x]
+    if not emp_tokens:
+        return False
+    emp_first=emp_tokens[0]
+    variantes={emp,emp_first,f"de {emp}",f"de {emp_first}",f"y {emp_first}",f"y {emp}"}
+    return t in variantes
+
 async def cargar_contexto_resumido(tel):
     rows=await db_get("bia_contexto_activo",f"telefono=eq.{tel}&select=telefono,empleado_id,tema,subtema,paso,estado_flujo,dominio,obra_id,obra_nombre,empleado_objetivo_id,empleado_objetivo_nombre,mes,anio,fecha,ultima_pregunta,ultimo_mensaje_user,ultima_respuesta_bia,metadata,updated_at&limit=1")
     if not rows:
@@ -459,6 +479,17 @@ async def borrar_espera(espera_id):
             await c.delete(f"{SUPA}/rest/v1/bia_esperas?id=eq.{espera_id}",headers={"apikey":SK,"Authorization":f"Bearer {SK}"})
     except Exception as e:
         log.error(f"Borrar espera: {e}")
+
+def espera_caducada(esp,ttl_min=ESPERA_TTL_MINUTES):
+    try:
+        ct=(esp or {}).get("created_at","")
+        if not ct:
+            return False
+        created=datetime.fromisoformat(ct.replace("Z","+00:00"))
+        ahora=datetime.now(created.tzinfo) if created.tzinfo else datetime.now()
+        return (ahora-created)>timedelta(minutes=ttl_min)
+    except Exception:
+        return False
 
 # ══════════════ PERSONALIDAD ══════════════
 BIA_PERSONA="Eres Bia, secretaria inteligente de Euromir. Cercana, directa, con chispa y humor. Emojis con naturalidad. CORTO para WhatsApp (3-5 lineas). Adapta el tono segun las notas del empleado. No saludes ni digas 'hola' en cada respuesta: si la conversacion ya esta en marcha, continua natural y directo."
@@ -1055,6 +1086,8 @@ def detectar(txt,empleado_rol=0,tiene_espera_conf=False,txt_original=""):
     # Normal obra detection (lowercase)
     if re.search(r'nueva obra|registra(r|me)?\s*obra|abrir obra|alta obra|dar de alta obra',t): return "OBRA_ALTA","crear",0.95
     if re.search(r'cerrar obra|baja obra|dar de baja',t): return "OBRA_BAJA","cerrar",0.9
+    if re.search(r'(que me puedes decir de|que sabes de|informacion de|información de|quien es|quién es)\s+[a-záéíóúñ]+',t): return "EMPLEADOS","consultar",0.88
+    if re.search(r'^de\s+[a-záéíóúñ]+(?:\s+[a-záéíóúñ]+)?\s+que me puedes decir',t): return "EMPLEADOS","consultar",0.88
     if re.search(r'n[oó]mina|sueldo|salario|cu[aá]nto (le )?debo|pagar a|calcul[ae]|env[ií]a(me)?\\s.*(n[oó]mina|documento)',t): return "NOMINA","calcular",0.95
     return "AMBIGUO","clasificar",0.0
 
@@ -1693,13 +1726,21 @@ async def procesar(s):
     esperas=await db_get("bia_esperas",f"telefono=eq.{s.telefono}&order=created_at.desc&limit=1")
     if esperas:
         esp=esperas[0];log.info(f"[{s.trace_id}] \u23f3 Espera: {esp['tipo']}")
-        ctx=esp.get("contexto",{}) or {}
-        consume_espera=debe_consumir_espera(esp,s.mensaje_normalizado,rol_actual)
-        if consume_espera:
+        if espera_caducada(esp):
+            log.info(f"[{s.trace_id}] \u231b Espera caducada ({esp.get('tipo')}) > {ESPERA_TTL_MINUTES} min, borrando")
             await borrar_espera(esp["id"])
+            esperas=[]
         else:
-            log.info(f"[{s.trace_id}] Manteniendo espera {esp.get('tipo')} para no mezclar flujos")
-            esp={"tipo":"_skip_espera_","contexto":ctx}
+            ctx=esp.get("contexto",{}) or {}
+            consume_espera=debe_consumir_espera(esp,s.mensaje_normalizado,rol_actual)
+            if consume_espera:
+                await borrar_espera(esp["id"])
+            else:
+                log.info(f"[{s.trace_id}] Manteniendo espera {esp.get('tipo')} para no mezclar flujos")
+                esp={"tipo":"_skip_espera_","contexto":ctx}
+        if not esperas:
+            esp={"tipo":"_skip_espera_","contexto":{}}
+            consume_espera=False
         # Factura obra selection
         if esp.get("tipo")=="factura_obra" and consume_espera:
             log.info(f"[{s.trace_id}] Factura obra selection: {s.mensaje_normalizado}")
@@ -2590,6 +2631,7 @@ async def procesar(s):
             s.add_error(f"Intent: {e}")
         s.timer_end("intent")
     
+    ctx_activo=await cargar_contexto_resumido(s.telefono)
     # Detector (with confirmation protection)
     # Re-check esperas for confirmation context (previous espera was consumed, check if new one exists)
     conf_esperas=await db_get("bia_esperas",f"telefono=eq.{s.telefono}&dominio=eq.FICHAJE&order=created_at.desc&limit=1&select=tipo,dominio")
@@ -2602,7 +2644,12 @@ async def procesar(s):
         log.info(f"[{s.trace_id}] \U0001f3af Regex: {dom}")
     else:
         s.timer_start("clasificador");dom,conf=await clasificar(s.mensaje_normalizado);s.timer_end("clasificador")
-        s.dominio,s.confianza,s.dominio_fuente=dom,conf,"gpt"
+        fuente_dom="gpt"
+        if dom in ("GENERAL","OBRAS","FINANZAS") and es_followup_empleado_ctx(s.mensaje_normalizado,ctx_activo):
+            dom,conf="EMPLEADOS",0.93
+            fuente_dom="followup_empleado"
+            log.info(f"[{s.trace_id}] \U0001f477 Follow-up empleado: {s.mensaje_normalizado}")
+        s.dominio,s.confianza,s.dominio_fuente=dom,conf,fuente_dom
         log.info(f"[{s.trace_id}] \U0001f916 GPT: {dom} ({conf})")
     if not s.empleado.get("id"):s.add_error("Sin empleado",False);s.respuesta="No te identifique.";s.duracion_ms=int((time.time()-t0)*1000);await guardar_ejecucion(s);return s
     s.timer_start("agente")
