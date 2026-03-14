@@ -37,15 +37,33 @@ class BiaState:
 async def db_get(t,q=""):
     try:
         async with httpx.AsyncClient(timeout=15) as c:
-            r=await c.get(f"{SUPA}/rest/v1/{t}?{q}",headers={"apikey":SK,"Authorization":f"Bearer {SK}"}); return r.json() if r.status_code==200 else []
+            r=await c.get(f"{SUPA}/rest/v1/{t}?{q}",headers={"apikey":SK,"Authorization":f"Bearer {SK}"})
+            return safe_json_response(r,f"db_get:{t}",[]) if r.status_code==200 else []
     except: return []
 
 async def db_post(t,d):
     try:
         async with httpx.AsyncClient(timeout=15) as c:
             r=await c.post(f"{SUPA}/rest/v1/{t}",headers={"apikey":SK,"Authorization":f"Bearer {SK}","Content-Type":"application/json","Prefer":"return=representation"},json=d)
-            return r.json() if r.status_code in(200,201) else {"error":r.text}
+            return safe_json_response(r,f"db_post:{t}",{"error":"invalid json"}) if r.status_code in(200,201) else {"error":r.text}
     except Exception as e: return {"error":str(e)}
+
+def safe_json_response(resp,where="",default=None):
+    try:
+        return resp.json()
+    except Exception as e:
+        raw=(getattr(resp,"text","") or "")[:300].replace("\n"," ").replace("\r"," ")
+        ct=(getattr(resp,"headers",{}) or {}).get("content-type","")
+        status=getattr(resp,"status_code","?")
+        log.error(f"{where} JSON invalido status={status} ct={ct} body={raw}")
+        if isinstance(default,dict):
+            out=dict(default)
+            out.setdefault("error",f"{where} invalid json")
+            out["_parse_error"]=str(e)
+            out["_http_status"]=status
+            out["_raw_text"]=raw
+            return out
+        return default if default is not None else {}
 
 async def guardar_ejecucion(s):
     await db_post("bia_ejecuciones",{"trace_id":s.trace_id,"telefono":s.telefono,"empleado_id":s.empleado.get("id"),"empleado_nombre":s.empleado.get("nombre",""),"input_original":(s.mensaje_original or "")[:2000],"input_normalizado":(s.mensaje_normalizado or "")[:2000],"tipo_mensaje":s.tipo_mensaje,"dominio":s.dominio,"dominio_fuente":s.dominio_fuente,"accion":s.accion,"confianza":s.confianza,"agente":s.dominio,"estado_final":"error" if s.errores else "ok","respuesta":(s.respuesta or "")[:2000],"necesita_humano":s.necesita_humano,"error":json.dumps(s.errores) if s.errores else None,"duracion_ms":s.duracion_ms,"metadata":json.dumps({"timestamps":s.timestamps})})
@@ -62,7 +80,8 @@ async def gpt(prompt,system="",model="gpt-4o-mini",max_t=500):
         msgs.append({"role":"user","content":prompt})
         async with httpx.AsyncClient(timeout=30) as c:
             r=await c.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json={"model":model,"messages":msgs,"max_tokens":max_t,"temperature":0.3})
-            return r.json()["choices"][0]["message"]["content"]
+            d=safe_json_response(r,"gpt",{})
+            return d.get("choices",[{"message":{"content":""}}])[0]["message"]["content"]
     except Exception as e: log.error(f"GPT: {e}"); return ""
 
 async def cargar_historial(tel,limit=20):
@@ -719,6 +738,17 @@ def debe_consumir_espera(esp, texto, rol):
             return False
         dom,_,_=detectar(t,rol,False)
         return dom=="AMBIGUO"
+    if tipo in (
+        "menu_admin","menu_enc","menu_emp","menu_fichar_obra","menu_encargado",
+        "menu_calc_nomina","menu_cuanto_cobro","menu_horas_trab","menu_enviar_nomina","menu_anticipos",
+        "coste_obra_sel","horas_obra_sel","empleados_obra_sel","reabrir_obra_sel","baja_empleado_sel"
+    ):
+        return t.isdigit()
+    if tipo=="menu_fichar_dia":
+        return t_low in ("1","2","hoy","ayer","azi","ieri")
+    if tipo=="menu_fichar_horas":
+        pf=parse_fichaje(normalizar_horas(t))
+        return bool(pf.get("ok") and pf.get("entrada") and pf.get("salida"))
     return True
 
 # ══════════════ AGENTE FICHAJE BLINDADO ══════════════
@@ -745,7 +775,9 @@ async def ag_fichaje(s):
                     await c.post(f"{PYTHON_URL}/procesar-fichaje",json={**base_body,"mensaje":msg_orig})
                 # Step 2: Send the obra selection
                 r=await c.post(f"{PYTHON_URL}/procesar-fichaje",json={**base_body,"mensaje":texto})
-                d=r.json()
+                d=safe_json_response(r,f"[{s.trace_id}] fichaje_continuar",{})
+                if d.get("_parse_error"):
+                    raise ValueError(f"backend fichajes devolvio respuesta no JSON ({d.get('_http_status')})")
             msg=d.get("mensaje",d.get("message",str(d)))
             if d.get("error") or "error" in str(d).lower()[:50]:
                 await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":emp_id,"tipo":"seleccion_obra","dominio":"FICHAJE","contexto":{"retry":True}})
@@ -765,7 +797,10 @@ async def ag_fichaje(s):
         try:
             async with httpx.AsyncClient(timeout=30) as c:
                 r=await c.post(f"{PYTHON_URL}/confirmar-fichajes",json={"respuesta":texto,"fecha":""})
-                msg=r.json().get("mensaje",r.json().get("message",str(r.json())))
+                d=safe_json_response(r,f"[{s.trace_id}] fichaje_confirmar",{})
+                if d.get("_parse_error"):
+                    raise ValueError(f"backend confirmacion devolvio respuesta no JSON ({d.get('_http_status')})")
+                msg=d.get("mensaje",d.get("message",str(d)))
             s.timer_end("fichaje"); return msg
         except Exception as e:
             s.add_error(f"Confirmar: {e}"); s.timer_end("fichaje"); return "Problema con la confirmacion \U0001f527"
@@ -875,7 +910,9 @@ async def ag_fichaje(s):
     try:
         async with httpx.AsyncClient(timeout=30) as c:
             r=await c.post(f"{PYTHON_URL}/procesar-fichaje",json=body)
-            d=r.json()
+            d=safe_json_response(r,f"[{s.trace_id}] fichaje_procesar",{})
+            if d.get("_parse_error"):
+                raise ValueError(f"backend fichajes devolvio respuesta no JSON ({d.get('_http_status')})")
         msg=d.get("mensaje",d.get("message",str(d)))
         resultado="registrado"
         
@@ -934,7 +971,7 @@ async def enviar_doc_whatsapp(telefono,drive_file_id,filename):
         async with httpx.AsyncClient(timeout=60) as c:
             # Download from Drive via n8n webhook
             dr=await c.post(f"{N8N}/webhook/download-drive-base64",json={"drive_file_id":drive_file_id,"filename":filename})
-            dd=dr.json()
+            dd=safe_json_response(dr,"download_drive_base64",{})
         if not dd.get("success") or not dd.get("base64"):
             log.error(f"Drive download failed: {str(dd)[:200]}")
             return False
@@ -995,7 +1032,9 @@ async def _calcular_nomina(s,datos):
         log.info(f"[{s.trace_id}] Calcular nomina: {datos}")
         async with httpx.AsyncClient(timeout=30) as c:
             r=await c.post(f"{PYTHON_URL}/calcular-nomina",json=datos)
-            d=r.json()
+            d=safe_json_response(r,f"[{s.trace_id}] nomina_calcular",{})
+        if d.get("_parse_error"):
+            raise ValueError(f"backend nomina devolvio respuesta no JSON ({d.get('_http_status')})")
         if d.get("success"):
             s.timer_end("nomina");return d.get("resumen","Nomina calculada pero sin resumen")
         else:
@@ -1210,7 +1249,7 @@ async def procesar(s):
     _cmd = s.mensaje_original.strip()
     _cmd_low = _cmd.lower()
     if _cmd_low in ("ayuda","help","menu","ajutor"):
-        _rol=int(s.empleado.get("rol_id",99) or 99)
+        _rol=rol_actual
         _idioma=s.empleado.get("idioma","es") or "es"
         if _cmd_low == "ajutor": _idioma = "ro"
         _nombre=s.empleado.get("apodo") or s.empleado.get("nombre","")
@@ -1262,6 +1301,7 @@ async def procesar(s):
             await borrar_espera(esp["id"])
         else:
             log.info(f"[{s.trace_id}] Manteniendo espera {esp.get('tipo')} para no mezclar flujos")
+            esp={"tipo":"_skip_espera_","contexto":ctx}
         # Factura obra selection
         if esp.get("tipo")=="factura_obra" and consume_espera:
             log.info(f"[{s.trace_id}] Factura obra selection: {s.mensaje_normalizado}")
@@ -1499,11 +1539,11 @@ async def procesar(s):
         if esp.get("tipo") and esp["tipo"].startswith("alta_emp_"):
             paso = esp["tipo"]
             val = s.mensaje_normalizado.strip()
-            if paso == "alta_emp_nombre": ctx["nombre"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_dni", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "DNI/NIE?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_ejecucion(s); return s
-            elif paso == "alta_emp_dni": ctx["dni"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_tel", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Telefono?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_ejecucion(s); return s
-            elif paso == "alta_emp_tel": ctx["telefono"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_cat", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Categoria? (oficial/ayudante/encargado)"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_ejecucion(s); return s
-            elif paso == "alta_emp_cat": ctx["cargo"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_email", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Email?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_ejecucion(s); return s
-            elif paso == "alta_emp_email": ctx["email"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_dir", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Direccion completa?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_ejecucion(s); return s
+            if paso == "alta_emp_nombre": ctx["nombre"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_dni", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "DNI/NIE?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta); await guardar_ejecucion(s); return s
+            elif paso == "alta_emp_dni": ctx["dni"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_tel", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Telefono?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta); await guardar_ejecucion(s); return s
+            elif paso == "alta_emp_tel": ctx["telefono"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_cat", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Categoria? (oficial/ayudante/encargado)"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta); await guardar_ejecucion(s); return s
+            elif paso == "alta_emp_cat": ctx["cargo"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_email", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Email?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta); await guardar_ejecucion(s); return s
+            elif paso == "alta_emp_email": ctx["email"] = val; await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "alta_emp_dir", "dominio": "INTENT", "contexto": ctx}); s.respuesta = "Direccion completa?"; s.dominio = "INTENT"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000); await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta); await guardar_ejecucion(s); return s
             elif paso == "alta_emp_dir":
                 ctx["direccion"] = val
                 emp_data = {"nombre": ctx.get("nombre",""), "dni_nie": ctx.get("dni",""), "telefono": ctx.get("telefono",""), "cargo": ctx.get("cargo",""), "email": ctx.get("email",""), "direccion": ctx.get("direccion",""), "estado": "Activo", "rol_id": 3}
@@ -1664,7 +1704,9 @@ async def procesar(s):
             try:
                 async with httpx.AsyncClient(timeout=30) as nc:
                     nr=await nc.post(f"{PYTHON_URL}/calcular-nomina",json={"empleado_nombre":enm,"mes":mes,"anio":anio})
-                    nd=nr.json()
+                    nd=safe_json_response(nr,f"[{s.trace_id}] cmd_calc_nomina",{})
+                if nd.get("_parse_error"):
+                    raise ValueError(f"backend nomina devolvio respuesta no JSON ({nd.get('_http_status')})")
                 s.respuesta=nd.get("resumen","No pude calcular") if nd.get("success") else nd.get("mensaje","Error")
             except Exception as e: s.respuesta=f"Error calculando nomina: {str(e)[:100]}"
             s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
@@ -1960,16 +2002,19 @@ async def procesar(s):
                 try:
                     async with httpx.AsyncClient(timeout=30) as c:
                         r = await c.post(f"{PYTHON_URL}/procesar-fichaje", json=body)
-                        d = r.json()
+                        d = safe_json_response(r, f"[{s.trace_id}] menu_fichar_horas", {})
+                    if d.get("_parse_error"):
+                        raise ValueError(f"backend fichajes devolvio respuesta no JSON ({d.get('_http_status')})")
                     msg_r = d.get("mensaje", d.get("message", str(d)))
                     if "obra" in msg_r.lower() and "1." in msg_r:
                         # Backend asking for obra but we already know it — send selection
-                        obras_backend = await db_get("obras", "estado=eq.En curso&select=id,nombre&order=nombre")
-                        obra_idx = next((i for i, o in enumerate(obras_backend) if o["id"] == obra.get("id")), -1)
-                        if obra_idx >= 0:
+                        obra_ref = (obra.get("nombre") or "").strip()
+                        if obra_ref:
                             async with httpx.AsyncClient(timeout=30) as c:
-                                r2 = await c.post(f"{PYTHON_URL}/procesar-fichaje", json={**body, "mensaje": str(obra_idx + 1)})
-                                d2 = r2.json()
+                                r2 = await c.post(f"{PYTHON_URL}/procesar-fichaje", json={**body, "mensaje": obra_ref})
+                                d2 = safe_json_response(r2, f"[{s.trace_id}] menu_fichar_horas_obra", {})
+                            if d2.get("_parse_error"):
+                                raise ValueError(f"backend fichajes devolvio respuesta no JSON ({d2.get('_http_status')})")
                             msg_r = d2.get("mensaje", d2.get("message", str(d2)))
                     s.respuesta = msg_r
                 except Exception as e:
@@ -2005,7 +2050,9 @@ async def procesar(s):
                 try:
                     async with httpx.AsyncClient(timeout=30) as c:
                         r = await c.post(f"{PYTHON_URL}/calcular-nomina", json={"empleado_nombre": enm, "mes": mes_n, "anio": anio_n})
-                        d = r.json()
+                        d = safe_json_response(r, f"[{s.trace_id}] menu_nomina", {})
+                    if d.get("_parse_error"):
+                        raise ValueError(f"backend nomina devolvio respuesta no JSON ({d.get('_http_status')})")
                     s.respuesta = d.get("resumen", "No pude calcular") if d.get("success") else d.get("mensaje", "Error")
                 except Exception as e: s.respuesta = f"Error: {str(e)[:100]}"
             
@@ -2188,13 +2235,16 @@ async def webhook(req:Request):
                 img_b64=""
                 async with httpx.AsyncClient(timeout=30) as dl:
                     evo_r=await dl.post(f"{EVO}/chat/getBase64FromMediaMessage/{INSTANCE}",headers={"apikey":EK,"Content-Type":"application/json"},json={"message":{"key":msg_key},"convertToMp4":False})
-                    if evo_r.status_code in(200,201):img_b64=evo_r.json().get("base64","");log.info(f"Evo base64: {len(img_b64)} chars")
+                    if evo_r.status_code in(200,201):
+                        evo_d=safe_json_response(evo_r,"image_base64",{})
+                        img_b64=evo_d.get("base64","")
+                        log.info(f"Evo base64: {len(img_b64)} chars")
                 if img_b64:
                     mime=img_msg.get("mimetype","image/jpeg")
                     ocr_msgs=[{"role":"user","content":[{"type":"text","text":"Analiza esta factura/ticket. Extrae: proveedor, CIF, fecha (YYYY-MM-DD), concepto, base_imponible, iva_porcentaje, iva_importe, total. SOLO JSON sin markdown."},{"type":"image_url","image_url":{"url":f"data:{mime};base64,{img_b64}"}}]}]
                     async with httpx.AsyncClient(timeout=60) as oc:
                         ocr_r=await oc.post("https://api.openai.com/v1/chat/completions",headers={"Authorization":f"Bearer {OPENAI_KEY}","Content-Type":"application/json"},json={"model":"gpt-4o-mini","messages":ocr_msgs,"max_tokens":500})
-                        ocr_data=ocr_r.json()
+                        ocr_data=safe_json_response(ocr_r,"ocr_factura",{"error":"invalid json"})
                         if "error" in ocr_data:ocr_raw='{"proveedor":"No pude leer","total":0}'
                         else:ocr_raw=ocr_data["choices"][0]["message"]["content"]
                     if "```" in ocr_raw:ocr_raw=ocr_raw.split("```")[1].replace("json","").strip()
@@ -2218,7 +2268,7 @@ async def webhook(req:Request):
                                 folder_id=DRIVE_FOLDERS.get(trim_key,DRIVE_FOLDERS.get("T1",""))
                                 async with httpx.AsyncClient(timeout=30) as drc:
                                     dr_r=await drc.post(f"{N8N}/webhook/upload-factura-drive",json={"pdf_base64":pdf_b64,"filename":f"FAC_{prov_name}_{fecha_name}.pdf","folder_id":folder_id})
-                                    if dr_r.status_code==200:drive_url=dr_r.json().get("url","")
+                                    if dr_r.status_code==200:drive_url=safe_json_response(dr_r,"upload_factura_drive",{}).get("url","")
                     except Exception as e:log.error(f"PDF/Drive: {e}")
                     obras=await db_get("obras","select=id,nombre,spreadsheet_id&estado=eq.En curso&order=nombre")
                     obras_txt="\n".join([f"{i+1}. *{o['nombre']}*" for i,o in enumerate(obras)])
@@ -2240,14 +2290,14 @@ async def webhook(req:Request):
                 import base64 as b64mod,io as iomod
                 async with httpx.AsyncClient(timeout=30) as dl:
                     evo_r=await dl.post(f"{EVO}/chat/getBase64FromMediaMessage/{INSTANCE}",headers={"apikey":EK,"Content-Type":"application/json"},json={"message":{"key":msg_key},"convertToMp4":False})
-                    if evo_r.status_code in(200,201):audio_b64=evo_r.json().get("base64","")
+                    if evo_r.status_code in(200,201):audio_b64=safe_json_response(evo_r,"audio_base64",{}).get("base64","")
                     else:audio_b64=""
                 if audio_b64:
                     audio_bytes=b64mod.b64decode(audio_b64)
                     files={"file":("audio.ogg",iomod.BytesIO(audio_bytes),"audio/ogg")}
                     async with httpx.AsyncClient(timeout=30) as wc:
                         wr=await wc.post("https://api.openai.com/v1/audio/transcriptions",headers={"Authorization":f"Bearer {OPENAI_KEY}"},data={"model":"whisper-1"},files=files)
-                        transcription=wr.json().get("text","")
+                        transcription=safe_json_response(wr,"audio_transcription",{}).get("text","")
                     if transcription:
                         await guardar_msg(tel,emp.get("id",0),"user",f"[audio] {transcription}")
                         s=BiaState(telefono=tel,mensaje_original=transcription,tipo_mensaje="audio",empleado=emp);s=await procesar(s)
