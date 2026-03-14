@@ -260,6 +260,36 @@ def _limpiar_ctx_por_tema(payload,meta,tema_nuevo,tema_anterior):
             payload["fecha"]=None; changed=True
     return changed
 
+_RGX_SALUDO=re.compile(r'^(hola|holi|buenas(?:\s+d[ií]as|\s+tardes|\s+noches)?|hey|que tal|qué tal|ola)[\s!.,?]*$',re.I)
+_RGX_CORTESIA=re.compile(r'^(gracias|muchas gracias|ok|vale|perfecto|genial|estupendo|entendido|de acuerdo|oki|dale|bien)[\s!.,?]*$',re.I)
+_RGX_SALUDO_APERTURA=re.compile(r'^\s*(hola|buenas|hey|qué tal|que tal|gabriel[,!]?|hola[,!]\s+\w+)',re.I)
+
+def es_saludo_simple(txt):
+    return bool(_RGX_SALUDO.match((txt or "").strip()))
+
+def es_cortesia_simple(txt):
+    return bool(_RGX_CORTESIA.match((txt or "").strip()))
+
+def debe_saludar(msg_user,hist):
+    if es_saludo_simple(msg_user):
+        return True
+    recientes=list(hist or [])[-4:]
+    if not recientes:
+        return True
+    for m in reversed(recientes):
+        if m.get("role")=="assistant" and _RGX_SALUDO_APERTURA.search(m.get("content","")):
+            return False
+    return False
+
+def quitar_saludo_repetido(txt):
+    if not txt:
+        return txt
+    t=txt.strip()
+    t=re.sub(r'^\s*(hola|holi|buenas(?:\s+d[ií]as|\s+tardes|\s+noches)?|hey)[^,\n.!?]*[,!.\s]*', '', t, count=1, flags=re.I)
+    t=re.sub(r'^\s*gabriel[,!.\s]*', '', t, count=1, flags=re.I)
+    t=t.lstrip()
+    return t or txt.strip()
+
 async def cargar_contexto_resumido(tel):
     rows=await db_get("bia_contexto_activo",f"telefono=eq.{tel}&select=telefono,empleado_id,tema,subtema,paso,estado_flujo,dominio,obra_id,obra_nombre,empleado_objetivo_id,empleado_objetivo_nombre,mes,anio,fecha,ultima_pregunta,ultimo_mensaje_user,ultima_respuesta_bia,metadata,updated_at&limit=1")
     if not rows:
@@ -380,6 +410,7 @@ async def guardar_resumen_dialogo(tel,eid,resumen,tema="",entidades=None,desde=N
 async def registrar_memoria_turno(s):
     try:
         eid=s.empleado.get("id",0)
+        es_cortesia=es_cortesia_simple(s.mensaje_normalizado)
         ctx_antes=await cargar_contexto_resumido(s.telefono)
         await guardar_contexto_resumido(
             s.telefono,eid,
@@ -396,6 +427,8 @@ async def registrar_memoria_turno(s):
         ctx=await cargar_contexto_resumido(s.telefono)
         tema_ctx=ctx.get("tema")
         tema_mem=tema_ctx
+        if es_cortesia and ctx_antes.get("tema"):
+            tema_mem=ctx_antes.get("tema")
         coherente=_tema_compatible_con_dominio(tema_ctx,s.dominio)
         if not coherente:
             tema_mem=_tema_base_desde_dominio(s.dominio) or tema_ctx
@@ -414,7 +447,7 @@ async def registrar_memoria_turno(s):
                 await guardar_memoria_hecho(s.telefono,eid,"referencia","ultimo_mes",ctx.get("mes"),relevancia=35,fuente="contexto")
         elif ctx_antes.get("tema") and ctx_antes.get("tema")!=tema_mem:
             log.info(f"[{s.trace_id}] memoria conservadora: no arrastro entidades de {ctx_antes.get('tema')} a {s.dominio}")
-        if s.respuesta and s.dominio not in ("SALUDO","GENERAL"):
+        if s.respuesta and s.dominio not in ("SALUDO","GENERAL") and not es_cortesia:
             resumen=f"Usuario: {s.mensaje_normalizado[:180]}. Bia: {s.respuesta[:220]}"
             await guardar_resumen_dialogo(s.telefono,eid,resumen,tema=tema_mem or s.dominio.lower(),entidades=entidades,hasta=datetime.now().isoformat(timespec='seconds'))
     except Exception as e:
@@ -428,7 +461,7 @@ async def borrar_espera(espera_id):
         log.error(f"Borrar espera: {e}")
 
 # ══════════════ PERSONALIDAD ══════════════
-BIA_PERSONA="Eres Bia, secretaria inteligente de Euromir. Cercana, directa, con chispa y humor. Emojis con naturalidad. CORTO para WhatsApp (3-5 lineas). Adapta el tono segun las notas del empleado."
+BIA_PERSONA="Eres Bia, secretaria inteligente de Euromir. Cercana, directa, con chispa y humor. Emojis con naturalidad. CORTO para WhatsApp (3-5 lineas). Adapta el tono segun las notas del empleado. No saludes ni digas 'hola' en cada respuesta: si la conversacion ya esta en marcha, continua natural y directo."
 
 # ══════════════ PARSER FICHAJES v2.0 ══════════════
 FP=[
@@ -1413,17 +1446,38 @@ async def ag_saludo(s):
 async def ag_obras(s):
     s.timer_start("obras");obras=await db_get("obras","select=id,nombre,estado,direccion,presupuesto_total,spreadsheet_id&estado=eq.En curso&order=nombre")
     n=s.empleado.get("apodo") or s.empleado.get("nombre","")
-    r2=await gpt(f'Obras en curso:\n{json.dumps(obras,ensure_ascii=False)[:2000]}\n\nPregunta: "{s.mensaje_normalizado}"\nCorto para WhatsApp.',BIA_PERSONA+f" Hablas con {n}.","gpt-4o")
+    hist=await cargar_historial(s.telefono)
+    saludar=debe_saludar(s.mensaje_normalizado,hist)
+    inst="Si la conversacion ya esta en marcha, contesta sin saludo ni introduccion. Ve directa al dato."
+    if es_cortesia_simple(s.mensaje_normalizado):
+        inst="Es una respuesta de cortesia. Contesta muy corto, amable y sin abrir un tema nuevo ni saludar."
+    r2=await gpt(f'Obras en curso:\n{json.dumps(obras,ensure_ascii=False)[:2000]}\n\nPregunta: "{s.mensaje_normalizado}"\nCorto para WhatsApp.',BIA_PERSONA+f" Hablas con {n}. {inst}","gpt-4o")
+    if r2 and not saludar:
+        r2=quitar_saludo_repetido(r2)
     s.timer_end("obras"); return r2 or "No pude consultar obras. \U0001f527"
 
 async def ag_finanzas(s):
     s.timer_start("finanzas");g2=await db_get("gastos","select=id,concepto,total,obra,proveedor&order=created_at.desc&limit=10")
-    r2=await gpt(f'Gastos recientes:\n{json.dumps(g2,ensure_ascii=False)[:1500]}\n\nPregunta: "{s.mensaje_normalizado}"',"Eres Bia. Corto.","gpt-4o")
+    hist=await cargar_historial(s.telefono)
+    saludar=debe_saludar(s.mensaje_normalizado,hist)
+    inst="No saludes si ya estabais hablando. Responde natural y directa."
+    if es_cortesia_simple(s.mensaje_normalizado):
+        inst="Es una respuesta de cortesia. Contesta muy corto, amable y sin saludar."
+    r2=await gpt(f'Gastos recientes:\n{json.dumps(g2,ensure_ascii=False)[:1500]}\n\nPregunta: "{s.mensaje_normalizado}"',f"{BIA_PERSONA} {inst}","gpt-4o")
+    if r2 and not saludar:
+        r2=quitar_saludo_repetido(r2)
     s.timer_end("finanzas"); return r2 or "No pude consultar finanzas. \U0001f527"
 
 async def ag_empleados(s):
     s.timer_start("emps");e2=await db_get("empleados","select=id,nombre,cargo,estado&estado=eq.Activo&order=nombre")
-    r2=await gpt(f'Empleados:\n{json.dumps(e2,ensure_ascii=False)[:1500]}\n\nPregunta: "{s.mensaje_normalizado}"',"Eres Bia. Corto.","gpt-4o")
+    hist=await cargar_historial(s.telefono)
+    saludar=debe_saludar(s.mensaje_normalizado,hist)
+    inst="No saludes si ya estabais hablando. Responde como continuacion natural."
+    if es_cortesia_simple(s.mensaje_normalizado):
+        inst="Es una respuesta de cortesia. Contesta muy corto, amable y sin saludar."
+    r2=await gpt(f'Empleados:\n{json.dumps(e2,ensure_ascii=False)[:1500]}\n\nPregunta: "{s.mensaje_normalizado}"',f"{BIA_PERSONA} {inst}","gpt-4o")
+    if r2 and not saludar:
+        r2=quitar_saludo_repetido(r2)
     s.timer_end("emps"); return r2 or "No pude consultar empleados. \U0001f527"
 
 async def ag_general(s):
@@ -1433,12 +1487,16 @@ async def ag_general(s):
     ctx=await cargar_contexto_resumido(s.telefono)
     hechos=await cargar_memoria_hechos(s.telefono,8)
     resumenes=await cargar_resumenes_dialogo(s.telefono,3)
+    saludar=debe_saludar(s.mensaje_normalizado,hist)
     h="".join([("Emp: " if m.get("role")=="user" else "Bia: ")+m.get("content","")+"\n" for m in hist[-8:]]) if hist else ""
     ctx_txt=", ".join([f"{k}: {v}" for k,v in ctx.items() if k!="updated_at"]) if ctx else "ninguno"
     hechos_txt="\n".join([f"- {x.get('tema')}/{x.get('clave')}: {x.get('valor')}" for x in hechos]) if hechos else "- sin hechos guardados"
     res_txt="\n".join([f"- {r.get('tema') or 'tema'}: {r.get('resumen','')}" for r in resumenes]) if resumenes else "- sin resumenes"
     prompt_sistema=BIA_PERSONA+f"\nHablas con: {n}\nNotas: {nt2}\nContexto activo: {ctx_txt}\nMemoria larga:\n{hechos_txt}\nResumenes recientes:\n{res_txt}\nHistorial:\n{h}\nSi el mensaje encaja con el contexto activo, continua ese tema. Si usa referencias como 'esa obra', 'el de antes' o 'marzo', apóyate primero en el contexto activo y luego en la memoria larga. Si cambia de tema claramente, cambia sin arrastrar el contexto viejo."
-    return await gpt(s.mensaje_normalizado,prompt_sistema,"gpt-4o") or f"Perdona {n}, no te entendi \U0001f914"
+    out=await gpt(s.mensaje_normalizado,prompt_sistema,"gpt-4o") or f"Perdona {n}, no te entendi \U0001f914"
+    if out and not saludar:
+        out=quitar_saludo_repetido(out)
+    return out
 
 async def ag_obra_alta(s):
     await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"obra_nombre","dominio":"OBRA_ALTA","contexto":{}})
