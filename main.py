@@ -221,6 +221,45 @@ def _tema_compatible_con_dominio(tema,dominio):
         return True
     return tema_l in allowed
 
+def _tema_entity_policy(tema):
+    tema_l=(tema or "").lower()
+    if tema_l in ("gastos_obra","horas_obra","fichaje","obras","obra_alta","obra_baja","reabrir_obra","encargado","coste_obra"):
+        return {"obra":True,"empleado":tema_l=="encargado","mes":tema_l in ("gastos_obra","horas_obra","coste_obra"),"fecha":tema_l=="fichaje"}
+    if tema_l in ("gastos_empleado","nomina","anticipo","empleados"):
+        return {"obra":False,"empleado":True,"mes":tema_l in ("gastos_empleado","nomina","anticipo"),"fecha":False}
+    if tema_l in ("finanzas","factura"):
+        return {"obra":tema_l=="factura","empleado":False,"mes":False,"fecha":False}
+    return {"obra":False,"empleado":False,"mes":False,"fecha":False}
+
+def _limpiar_ctx_por_tema(payload,meta,tema_nuevo,tema_anterior):
+    if not tema_nuevo:
+        return False
+    if tema_anterior and tema_nuevo.lower()==str(tema_anterior).lower():
+        return False
+    pol=_tema_entity_policy(tema_nuevo)
+    changed=False
+    if not pol.get("obra"):
+        if payload.get("obra_id") is not None:
+            payload["obra_id"]=None; changed=True
+        if payload.get("obra_nombre") is not None:
+            payload["obra_nombre"]=None; changed=True
+    if not pol.get("empleado"):
+        if payload.get("empleado_objetivo_id") is not None:
+            payload["empleado_objetivo_id"]=None; changed=True
+        if payload.get("empleado_objetivo_nombre") is not None:
+            payload["empleado_objetivo_nombre"]=None; changed=True
+    if not pol.get("mes"):
+        if payload.get("mes") is not None:
+            payload["mes"]=None; changed=True
+        if payload.get("anio") is not None:
+            payload["anio"]=None; changed=True
+        if meta.get("mes_txt") is not None:
+            meta.pop("mes_txt",None); changed=True
+    if not pol.get("fecha"):
+        if payload.get("fecha") is not None:
+            payload["fecha"]=None; changed=True
+    return changed
+
 async def cargar_contexto_resumido(tel):
     rows=await db_get("bia_contexto_activo",f"telefono=eq.{tel}&select=telefono,empleado_id,tema,subtema,paso,estado_flujo,dominio,obra_id,obra_nombre,empleado_objetivo_id,empleado_objetivo_nombre,mes,anio,fecha,ultima_pregunta,ultimo_mensaje_user,ultima_respuesta_bia,metadata,updated_at&limit=1")
     if not rows:
@@ -232,6 +271,7 @@ async def guardar_contexto_resumido(tel,eid,**updates):
     row=(rows[0] if rows else {}) or {}
     meta=dict(row.get("metadata") or {})
     changed=False
+    tema_anterior=row.get("tema")
     payload={
         "telefono":tel,
         "empleado_id":eid or row.get("empleado_id"),
@@ -257,6 +297,9 @@ async def guardar_contexto_resumido(tel,eid,**updates):
         "obra":"obra_nombre",
         "empleado":"empleado_objetivo_nombre"
     }
+    tema_nuevo=_ctx_value(updates.get("tema")) or payload.get("tema")
+    if _limpiar_ctx_por_tema(payload,meta,tema_nuevo,tema_anterior):
+        changed=True
     for k,v in updates.items():
         key=alias_map.get(k,k)
         vv=_ctx_value(v)
