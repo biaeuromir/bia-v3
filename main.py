@@ -1130,6 +1130,7 @@ def detectar(txt,empleado_rol=0,tiene_espera_conf=False,txt_original=""):
     if cmd == "ENVIAR NOMINA": return "CMD_ENVIAR_NOMINA","paso1",1.0
     if cmd == "ANTICIPO": return "CMD_ANTICIPO","paso1",1.0
     if cmd == "REGISTRAR ANTICIPO": return "CMD_REG_ANTICIPO","paso1",1.0
+    if cmd == "REGISTRAR FICHAJES" or cmd == "REGISTRAR FICHAJE": return "CMD_REG_FICHAJES","paso1",1.0
     # Normal obra detection (lowercase)
     if re.search(r'nueva obra|registra(r|me)?\s*obra|abrir obra|alta obra|dar de alta obra',t): return "OBRA_ALTA","crear",0.95
     if re.search(r'cerrar obra|baja obra|dar de baja',t): return "OBRA_BAJA","cerrar",0.9
@@ -1716,7 +1717,14 @@ async def ag_cmd_reg_anticipo(s):
     await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_reg_ant_1","dominio":"CMD","contexto":{"emps":[{"id":e["id"],"nombre":e["nombre"]} for e in emps]}})
     return f"\U0001f4b3 *REGISTRAR ANTICIPO*\n\nQue empleado?\n\n{lista}\n\nDime numero o nombre"
 
-AG={"FICHAJE":ag_fichaje,"OBRA_ALTA":ag_obra_alta,"OBRA_BAJA":ag_obra_baja,"SALUDO":ag_saludo,"OBRAS":ag_obras,"FINANZAS":ag_finanzas,"EMPLEADOS":ag_empleados,"NOMINA":ag_nomina,"DOCUMENTOS":ag_general,"INVENTARIO":ag_general,"GENERAL":ag_general,"AYUDA":ag_ayuda_admin,"AYUDA_EMP":ag_ayuda_emp,"REABRIR_OBRA":ag_reabrir_obra,"CERRAR_OBRA":ag_cerrar_obra_cmd,"ALTA_EMPLEADO":ag_alta_empleado,"BAJA_EMPLEADO":ag_baja_empleado,"CMD_HORAS_OBRA":ag_cmd_horas_obra,"CMD_GASTOS_EMP":ag_cmd_gastos_emp,"CMD_GASTOS_OBRA":ag_cmd_gastos_obra,"CMD_CALC_NOMINA":ag_cmd_calc_nomina,"CMD_ENVIAR_NOMINA":ag_cmd_enviar_nomina,"CMD_ANTICIPO":ag_cmd_anticipo,"CMD_REG_ANTICIPO":ag_cmd_reg_anticipo}
+async def ag_cmd_reg_fichajes(s):
+    emps=await db_get("empleados","estado=eq.Activo&select=id,nombre&order=nombre")
+    if not emps: return "No hay empleados activos"
+    lista="\n".join([f"  {i+1}. *{e['nombre']}*" for i,e in enumerate(emps)])
+    await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_reg_fich_1","dominio":"CMD","contexto":{"emps":[{"id":e["id"],"nombre":e["nombre"]} for e in emps]}})
+    return f"\U0001f4cb *REGISTRAR FICHAJES*\n\nQue empleado(s)? (uno: *3* / varios: *1,3,5*)\n\n{lista}"
+
+AG={"FICHAJE":ag_fichaje,"OBRA_ALTA":ag_obra_alta,"OBRA_BAJA":ag_obra_baja,"SALUDO":ag_saludo,"OBRAS":ag_obras,"FINANZAS":ag_finanzas,"EMPLEADOS":ag_empleados,"NOMINA":ag_nomina,"DOCUMENTOS":ag_general,"INVENTARIO":ag_general,"GENERAL":ag_general,"AYUDA":ag_ayuda_admin,"AYUDA_EMP":ag_ayuda_emp,"REABRIR_OBRA":ag_reabrir_obra,"CERRAR_OBRA":ag_cerrar_obra_cmd,"ALTA_EMPLEADO":ag_alta_empleado,"BAJA_EMPLEADO":ag_baja_empleado,"CMD_HORAS_OBRA":ag_cmd_horas_obra,"CMD_GASTOS_EMP":ag_cmd_gastos_emp,"CMD_GASTOS_OBRA":ag_cmd_gastos_obra,"CMD_CALC_NOMINA":ag_cmd_calc_nomina,"CMD_ENVIAR_NOMINA":ag_cmd_enviar_nomina,"CMD_ANTICIPO":ag_cmd_anticipo,"CMD_REG_ANTICIPO":ag_cmd_reg_anticipo,"CMD_REG_FICHAJES":ag_cmd_reg_fichajes}
 
 # ══════════════ ROUTER PRINCIPAL ══════════════
 async def procesar(s):
@@ -1736,15 +1744,15 @@ async def procesar(s):
         
         if _rol == 1:
             # ADMIN: 18 options (12 admin + 6 personal)
-            s.respuesta=f"\U0001f6e0 Hola {_nombre}! Menu admin:\n\n*ADMIN:*\n1. ALTA OBRA\n2. CERRAR OBRA\n3. REABRIR OBRA\n4. ALTA EMPLEADO\n5. BAJA EMPLEADO\n6. HORAS OBRA\n7. GASTOS EMPLEADO\n8. GASTOS OBRA\n9. CALCULAR NOMINA\n10. ENVIAR NOMINA\n11. ANTICIPO\n12. REGISTRAR ANTICIPO\n\n*PERSONAL:*\n13. Fichar\n14. Mi nomina\n15. Cuanto cobro\n16. Horas trabajadas\n17. Mis anticipos\n18. Datos empresa\n\nDime numero o comando \U0001f60a"
+            s.respuesta=f"\U0001f6e0 Hola {_nombre}! Menu admin:\n\n*ADMIN:*\n1. ALTA OBRA\n2. CERRAR OBRA\n3. REABRIR OBRA\n4. ALTA EMPLEADO\n5. BAJA EMPLEADO\n6. HORAS OBRA\n7. GASTOS EMPLEADO\n8. GASTOS OBRA\n9. CALCULAR NOMINA\n10. ENVIAR NOMINA\n11. ANTICIPO\n12. REGISTRAR ANTICIPO\n13. REGISTRAR FICHAJES\n\n*PERSONAL:*\n14. Fichar\n15. Mi nomina\n16. Cuanto cobro\n17. Horas trabajadas\n18. Mis anticipos\n19. Datos empresa\n\nDime numero o comando \U0001f60a"
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"menu_admin","dominio":"MENU","contexto":{"idioma":_idioma}})
         
         elif _rol == 2:
             # ENCARGADO: 14 options (7 equipo + 7 personal) — sin BAJA EMP, CALC/ENVIAR NOM, ANTICIPO, REG ANTICIPO
             if _idioma == "ro":
-                s.respuesta=f"\U0001f477 Buna {_nombre}!\n\n*ECHIPA:*\n1. ALTA OBRA\n2. CERRAR OBRA\n3. REABRIR OBRA\n4. ALTA EMPLEADO\n5. HORAS OBRA\n6. GASTOS EMPLEADO\n7. GASTOS OBRA\n\n*PERSONAL:*\n8. Pontaj\n9. Calculeaza salariu\n10. Cat castig\n11. Ore lucrate\n12. Trimite-mi Nomina\n13. Avansurile mele\n14. Date firma\n15. Encargado meu\n\nSpune-mi numarul \U0001f60a"
+                s.respuesta=f"\U0001f477 Buna {_nombre}!\n\n*ECHIPA:*\n1. ALTA OBRA\n2. CERRAR OBRA\n3. REABRIR OBRA\n4. ALTA EMPLEADO\n5. HORAS OBRA\n6. GASTOS EMPLEADO\n7. GASTOS OBRA\n8. REGISTRAR FICHAJES\n\n*PERSONAL:*\n9. Pontaj\n9. Calculeaza salariu\n10. Cat castig\n11. Ore lucrate\n12. Trimite-mi Nomina\n13. Avansurile mele\n14. Date firma\n15. Encargado meu\n\nSpune-mi numarul \U0001f60a"
             else:
-                s.respuesta=f"\U0001f477 Hola {_nombre}!\n\n*EQUIPO:*\n1. ALTA OBRA\n2. CERRAR OBRA\n3. REABRIR OBRA\n4. ALTA EMPLEADO\n5. HORAS OBRA\n6. GASTOS EMPLEADO\n7. GASTOS OBRA\n\n*PERSONAL:*\n8. Fichar\n9. Calcular nomina\n10. Cuanto cobro\n11. Horas trabajadas\n12. Enviame mi nomina\n13. Mis anticipos\n14. Datos empresa\n15. Mi encargado\n\nDime numero o comando \U0001f60a"
+                s.respuesta=f"\U0001f477 Hola {_nombre}!\n\n*EQUIPO:*\n1. ALTA OBRA\n2. CERRAR OBRA\n3. REABRIR OBRA\n4. ALTA EMPLEADO\n5. HORAS OBRA\n6. GASTOS EMPLEADO\n7. GASTOS OBRA\n8. REGISTRAR FICHAJES\n\n*PERSONAL:*\n9. Fichar\n9. Calcular nomina\n10. Cuanto cobro\n11. Horas trabajadas\n12. Enviame mi nomina\n13. Mis anticipos\n14. Datos empresa\n15. Mi encargado\n\nDime numero o comando \U0001f60a"
             await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"menu_enc","dominio":"MENU","contexto":{"idioma":_idioma}})
         
         else:
@@ -1759,7 +1767,7 @@ async def procesar(s):
         if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
         await guardar_ejecucion(s);return s
     # ═══ CMD EXACTOS MAYUSCULAS (before esperas and intents) ═══
-    _cmd_map={"HORAS OBRA":"CMD_HORAS_OBRA","GASTOS EMPLEADO":"CMD_GASTOS_EMP","GASTOS OBRA":"CMD_GASTOS_OBRA","CALCULAR NOMINA":"CMD_CALC_NOMINA","ENVIAR NOMINA":"CMD_ENVIAR_NOMINA","ANTICIPO":"CMD_ANTICIPO","REGISTRAR ANTICIPO":"CMD_REG_ANTICIPO","REABRIR OBRA":"REABRIR_OBRA","CERRAR OBRA":"CERRAR_OBRA","ALTA EMPLEADO":"ALTA_EMPLEADO","BAJA EMPLEADO":"BAJA_EMPLEADO","ALTA OBRA":"OBRA_ALTA"}
+    _cmd_map={"HORAS OBRA":"CMD_HORAS_OBRA","GASTOS EMPLEADO":"CMD_GASTOS_EMP","GASTOS OBRA":"CMD_GASTOS_OBRA","CALCULAR NOMINA":"CMD_CALC_NOMINA","ENVIAR NOMINA":"CMD_ENVIAR_NOMINA","ANTICIPO":"CMD_ANTICIPO","REGISTRAR ANTICIPO":"CMD_REG_ANTICIPO","REGISTRAR FICHAJES":"CMD_REG_FICHAJES","REGISTRAR FICHAJE":"CMD_REG_FICHAJES","REABRIR OBRA":"REABRIR_OBRA","CERRAR OBRA":"CERRAR_OBRA","ALTA EMPLEADO":"ALTA_EMPLEADO","BAJA EMPLEADO":"BAJA_EMPLEADO","ALTA OBRA":"OBRA_ALTA"}
     if _cmd in _cmd_map:
         s.dominio=_cmd_map[_cmd];s.dominio_fuente="cmd";s.accion="paso1"
         log.info(f"[{s.trace_id}] \U0001f6e0 CMD: {_cmd} -> {s.dominio}")
@@ -2321,11 +2329,11 @@ async def procesar(s):
             try: sel = int(s.mensaje_normalizado.strip())
             except: sel = 0
             # Map admin numbers to CMD commands
-            cmd_map_admin = {1:"ALTA OBRA",2:"CERRAR OBRA",3:"REABRIR OBRA",4:"ALTA EMPLEADO",5:"BAJA EMPLEADO",6:"HORAS OBRA",7:"GASTOS EMPLEADO",8:"GASTOS OBRA",9:"CALCULAR NOMINA",10:"ENVIAR NOMINA",11:"ANTICIPO",12:"REGISTRAR ANTICIPO"}
-            emp_map_admin = {13:1,14:5,15:3,16:4,17:6,18:7}  # personal options → employee menu numbers
+            cmd_map_admin = {1:"ALTA OBRA",2:"CERRAR OBRA",3:"REABRIR OBRA",4:"ALTA EMPLEADO",5:"BAJA EMPLEADO",6:"HORAS OBRA",7:"GASTOS EMPLEADO",8:"GASTOS OBRA",9:"CALCULAR NOMINA",10:"ENVIAR NOMINA",11:"ANTICIPO",12:"REGISTRAR ANTICIPO",13:"REGISTRAR FICHAJES"}
+            emp_map_admin = {14:1,15:5,16:3,17:4,18:6,19:7}  # personal options → employee menu numbers
             if sel in cmd_map_admin:
                 cmd_name = cmd_map_admin[sel]
-                _cmd_map2 = {"HORAS OBRA":"CMD_HORAS_OBRA","GASTOS EMPLEADO":"CMD_GASTOS_EMP","GASTOS OBRA":"CMD_GASTOS_OBRA","CALCULAR NOMINA":"CMD_CALC_NOMINA","ENVIAR NOMINA":"CMD_ENVIAR_NOMINA","ANTICIPO":"CMD_ANTICIPO","REGISTRAR ANTICIPO":"CMD_REG_ANTICIPO","REABRIR OBRA":"REABRIR_OBRA","CERRAR OBRA":"CERRAR_OBRA","ALTA EMPLEADO":"ALTA_EMPLEADO","BAJA EMPLEADO":"BAJA_EMPLEADO","ALTA OBRA":"OBRA_ALTA"}
+                _cmd_map2 = {"HORAS OBRA":"CMD_HORAS_OBRA","GASTOS EMPLEADO":"CMD_GASTOS_EMP","GASTOS OBRA":"CMD_GASTOS_OBRA","CALCULAR NOMINA":"CMD_CALC_NOMINA","ENVIAR NOMINA":"CMD_ENVIAR_NOMINA","ANTICIPO":"CMD_ANTICIPO","REGISTRAR ANTICIPO":"CMD_REG_ANTICIPO","REGISTRAR FICHAJES":"CMD_REG_FICHAJES","REGISTRAR FICHAJE":"CMD_REG_FICHAJES","REABRIR OBRA":"REABRIR_OBRA","CERRAR OBRA":"CERRAR_OBRA","ALTA EMPLEADO":"ALTA_EMPLEADO","BAJA EMPLEADO":"BAJA_EMPLEADO","ALTA OBRA":"OBRA_ALTA"}
                 s.dominio = _cmd_map2.get(cmd_name, "GENERAL"); s.dominio_fuente = "menu"
                 try: s.respuesta = await AG.get(s.dominio, ag_general)(s)
                 except Exception as e: s.respuesta = f"Error: {str(e)[:100]}"
@@ -2336,7 +2344,7 @@ async def procesar(s):
                 # Fall through to menu_emp handler below
                 esp["tipo"] = "menu_emp"
             else:
-                s.respuesta = "Dime un numero del 1 al 18"
+                s.respuesta = "Dime un numero del 1 al 19"
                 s.dominio = "MENU"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
                 await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "menu_admin", "dominio": "MENU", "contexto": ctx})
                 if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
@@ -2351,8 +2359,8 @@ async def procesar(s):
             idioma = ctx.get("idioma", "es")
             try: sel = int(s.mensaje_normalizado.strip())
             except: sel = 0
-            cmd_map_enc = {1:"ALTA OBRA",2:"CERRAR OBRA",3:"REABRIR OBRA",4:"ALTA EMPLEADO",5:"HORAS OBRA",6:"GASTOS EMPLEADO",7:"GASTOS OBRA"}
-            emp_map_enc = {8:1,9:2,10:3,11:4,12:5,13:6,14:7,15:8}
+            cmd_map_enc = {1:"ALTA OBRA",2:"CERRAR OBRA",3:"REABRIR OBRA",4:"ALTA EMPLEADO",5:"HORAS OBRA",6:"GASTOS EMPLEADO",7:"GASTOS OBRA",8:"REGISTRAR FICHAJES"}
+            emp_map_enc = {9:1,10:2,11:3,12:4,13:5,14:6,15:7,16:8}
             if sel in cmd_map_enc:
                 cmd_name = cmd_map_enc[sel]
                 _cmd_map2 = {"HORAS OBRA":"CMD_HORAS_OBRA","GASTOS EMPLEADO":"CMD_GASTOS_EMP","GASTOS OBRA":"CMD_GASTOS_OBRA","REABRIR OBRA":"REABRIR_OBRA","CERRAR OBRA":"CERRAR_OBRA","ALTA EMPLEADO":"ALTA_EMPLEADO","ALTA OBRA":"OBRA_ALTA"}
@@ -2367,7 +2375,7 @@ async def procesar(s):
                 s.mensaje_normalizado = str(emp_map_enc[sel])
                 esp["tipo"] = "menu_emp"
             else:
-                s.respuesta = "Dime un numero del 1 al 15" if idioma != "ro" else "Spune-mi un numar de la 1 la 15"
+                s.respuesta = "Dime un numero del 1 al 16" if idioma != "ro" else "Spune-mi un numar de la 1 la 15"
                 s.dominio = "MENU"; s.dominio_fuente = "espera"; s.duracion_ms = int((time.time() - t0) * 1000)
                 await db_post("bia_esperas", {"telefono": s.telefono, "empleado_id": s.empleado.get("id", 0), "tipo": "menu_enc", "dominio": "MENU", "contexto": ctx})
                 if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
@@ -2628,6 +2636,131 @@ async def procesar(s):
             if s.respuesta: await guardar_msg(s.telefono, s.empleado.get("id", 0), "assistant", s.respuesta)
             await guardar_ejecucion(s); return s
         
+        # ═══ REGISTRAR FICHAJES paso a paso ═══
+        # Step 1: empleado(s) selected → ask obra
+        if esp.get("tipo") == "cmd_reg_fich_1":
+            emps_list = ctx.get("emps", [])
+            txt = s.mensaje_normalizado.strip()
+            selected = []
+            if "," in txt:
+                for part in txt.split(","):
+                    try:
+                        idx = int(part.strip()) - 1
+                        if 0 <= idx < len(emps_list): selected.append(emps_list[idx])
+                    except: pass
+            else:
+                try:
+                    idx = int(txt) - 1
+                    if 0 <= idx < len(emps_list): selected.append(emps_list[idx])
+                except:
+                    for e in emps_list:
+                        if txt.lower() in e.get("nombre","").lower(): selected.append(e); break
+            if not selected:
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_reg_fich_1","dominio":"CMD","contexto":ctx})
+                s.respuesta="No encontre. Dime numero(s) separados por coma"
+            else:
+                nombres = ", ".join([e["nombre"] for e in selected])
+                obras = await db_get("obras","estado=eq.En curso&select=id,nombre&order=nombre")
+                lista = "\n".join([f"  {i+1}. *{o['nombre']}*" for i,o in enumerate(obras)])
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_reg_fich_2","dominio":"CMD","contexto":{"selected":selected,"obras":[{"id":o["id"],"nombre":o["nombre"]} for o in obras]}})
+                s.respuesta=f"\U0001f477 Empleados: *{nombres}*\n\nEn que obra?\n\n{lista}"
+            s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
+        
+        # Step 2: obra selected → ask fecha
+        if esp.get("tipo") == "cmd_reg_fich_2":
+            obras = ctx.get("obras", [])
+            sel_obra = None
+            try:
+                idx = int(s.mensaje_normalizado.strip()) - 1
+                if 0 <= idx < len(obras): sel_obra = obras[idx]
+            except:
+                for o in obras:
+                    if s.mensaje_normalizado.lower() in o.get("nombre","").lower(): sel_obra = o; break
+            if not sel_obra:
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_reg_fich_2","dominio":"CMD","contexto":ctx})
+                s.respuesta="No encontre. Dime el numero."
+            else:
+                ctx["obra"] = sel_obra
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_reg_fich_3","dominio":"CMD","contexto":ctx})
+                s.respuesta=f"Obra: *{sel_obra['nombre']}*\n\nQue dia?\n  1. Hoy\n  2. Ayer\n  3. Fecha exacta (ej: 12/03/2026)"
+            s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
+        
+        # Step 3: fecha selected → ask horas
+        if esp.get("tipo") == "cmd_reg_fich_3":
+            t2 = s.mensaje_normalizado.strip().lower()
+            from datetime import timedelta as td_rf
+            if t2 in ("1","hoy"): fecha = date.today().isoformat()
+            elif t2 in ("2","ayer"): fecha = (date.today()-td_rf(days=1)).isoformat()
+            else: fecha = extraer_fecha(t2)
+            ctx["fecha"] = fecha
+            await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_reg_fich_4","dominio":"CMD","contexto":ctx})
+            s.respuesta=f"Fecha: *{fecha}*\n\nHora entrada y salida? (ej: *9-18* o *8:30-17*)"
+            s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
+        
+        # Step 4: horas → register for all selected employees
+        if esp.get("tipo") == "cmd_reg_fich_4":
+            selected = ctx.get("selected", [])
+            obra = ctx.get("obra", {})
+            fecha = ctx.get("fecha", date.today().isoformat())
+            msg_norm = normalizar_horas(s.mensaje_normalizado)
+            pf = parse_fichaje(msg_norm)
+            if not (pf.get("ok") and pf.get("entrada") and pf.get("salida")):
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_reg_fich_4","dominio":"CMD","contexto":ctx})
+                s.respuesta="No entendi. Ej: *9-18* o *8:30-17*"
+            else:
+                entrada = pf["entrada"]; salida = pf["salida"]
+                msg_backend = f"de {entrada} a {salida}"
+                registrados = []; errores = []
+                for emp in selected:
+                    try:
+                        body = {"mensaje":msg_backend,"empleado_id":emp["id"],"empleado_nombre":emp["nombre"],"empleado_telefono":"","coste_hora":0,"fuera_madrid_hora":15,"fecha":fecha}
+                        async with httpx.AsyncClient(timeout=30) as c:
+                            r = await c.post(f"{PYTHON_URL}/procesar-fichaje",json=body)
+                            d = r.json()
+                        msg_r = d.get("mensaje",d.get("message",""))
+                        # If backend asks for obra, send obra selection
+                        if "obra" in str(msg_r).lower() and "1." in str(msg_r):
+                            obras_be = await db_get("obras","estado=eq.En curso&select=id,nombre&order=nombre")
+                            obra_idx = next((i for i,o in enumerate(obras_be) if o["id"]==obra.get("id")),-1)
+                            if obra_idx >= 0:
+                                async with httpx.AsyncClient(timeout=30) as c:
+                                    r2 = await c.post(f"{PYTHON_URL}/procesar-fichaje",json={**body,"mensaje":str(obra_idx+1)})
+                                    d2 = r2.json()
+                                msg_r = d2.get("mensaje",d2.get("message",""))
+                        registrados.append(emp["nombre"])
+                    except Exception as e:
+                        errores.append(f"{emp['nombre']}: {str(e)[:50]}")
+                
+                det = "\n".join([f"  \u2705 *{n}* {entrada}-{salida}" for n in registrados])
+                err_txt = "\n".join([f"  \u274c {e}" for e in errores]) if errores else ""
+                s.respuesta = f"\U0001f4cb *Fichajes registrados en {obra.get('nombre','?')} ({fecha}):*\n\n{det}"
+                if err_txt: s.respuesta += f"\n\nErrores:\n{err_txt}"
+                s.respuesta += f"\n\nRegistrar mas? (1=Si / 2=No)"
+                ctx["last_obra"] = obra; ctx["last_fecha"] = fecha; ctx["last_horas"] = f"{entrada}-{salida}"
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_reg_fich_more","dominio":"CMD","contexto":ctx})
+            s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
+        
+        # Step 5: more? → restart or finish
+        if esp.get("tipo") == "cmd_reg_fich_more":
+            if s.mensaje_normalizado.strip() in ("1","si","sí","yes"):
+                emps = await db_get("empleados","estado=eq.Activo&select=id,nombre&order=nombre")
+                lista = "\n".join([f"  {i+1}. *{e['nombre']}*" for i,e in enumerate(emps)])
+                await db_post("bia_esperas",{"telefono":s.telefono,"empleado_id":s.empleado.get("id",0),"tipo":"cmd_reg_fich_1","dominio":"CMD","contexto":{"emps":[{"id":e["id"],"nombre":e["nombre"]} for e in emps]}})
+                s.respuesta=f"\U0001f4cb Que empleado(s)? (uno: *3* / varios: *1,3,5*)\n\n{lista}"
+            else:
+                s.respuesta="\u2705 Listo!"
+            s.dominio="CMD";s.dominio_fuente="espera";s.duracion_ms=int((time.time()-t0)*1000)
+            if s.respuesta:await guardar_msg(s.telefono,s.empleado.get("id",0),"assistant",s.respuesta)
+            await guardar_ejecucion(s);return s
+        
         # Handle confirmar_fichaje espera — user confirming LLM-parsed hours
         if esp.get("tipo")=="confirmar_fichaje" and consume_espera:
             resp_low=s.mensaje_normalizado.lower().strip()
@@ -2851,7 +2984,7 @@ async def test(req:Request):
     return{"trace_id":s.trace_id,"dominio":s.dominio,"dominio_fuente":s.dominio_fuente,"confianza":s.confianza,"respuesta":s.respuesta,"errores":s.errores,"duracion_ms":s.duracion_ms}
 
 @app.get("/health")
-async def health():return{"status":"ok","service":"bia-v3","version":"7.6.4"}
+async def health():return{"status":"ok","service":"bia-v3","version":"7.8-regfich"}
 
 if __name__=="__main__":
     import uvicorn;uvicorn.run(app,host="0.0.0.0",port=PORT)
